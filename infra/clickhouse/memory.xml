@@ -1,0 +1,21 @@
+<!--
+  Memory profile for the 20M-record prototype test (Section 7).
+
+  Inside Docker Desktop the server sees roughly 3.8 GB and defaults to 90% of
+  it as a hard ceiling. After a 20M-row bulk load, retained allocator arenas
+  and caches sat within 10 MB of that ceiling and the next insert was killed
+  by the overcommit tracker. These settings keep the baseline small; the
+  loader also purges between large tables. On a VPS with more RAM they are
+  simply conservative.
+
+  Do not add background_pool_size or merge_tree overrides here: a pool
+  smaller than ClickHouse's default free-entry thresholds fails
+  MergeTreeSettings::sanityCheck and the server refuses to start (exit 36).
+-->
+<clickhouse>
+    <max_server_memory_usage_to_ram_ratio>0.95</max_server_memory_usage_to_ram_ratio>
+    <mark_cache_size>134217728</mark_cache_size>
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+    <index_mark_cache_size>33554432</index_mark_cache_size>
+    <max_concurrent_queries>16</max_concurrent_queries>
+</clickhouse>

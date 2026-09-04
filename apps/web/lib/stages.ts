@@ -8,10 +8,10 @@ import type { AgentEvent } from './types';
 export const STAGES = [
   { key: 'understand', label: 'Understand',  events: ['run_started', 'scope_checked', 'intent_detected'] },
   { key: 'resolve',    label: 'Resolve',     events: ['entity_resolved', 'dates_resolved'] },
-  { key: 'plan',       label: 'Plan',        events: ['plan_validated', 'task_created'] },
+  { key: 'plan',       label: 'Plan',        events: ['plan_validated'] },
   { key: 'query',      label: 'Query',       events: ['tool_started', 'query_executed', 'tool_completed'] },
   { key: 'verify',     label: 'Verify',      events: ['verification_started', 'verification_completed', 'confidence_computed'] },
-  { key: 'answer',     label: 'Answer',      events: ['answer_generated', 'run_completed'] },
+  { key: 'answer',     label: 'Answer',      events: ['answer_generated', 'run_completed', 'task_completed'] },
 ] as const;
 
 export type StageKey = (typeof STAGES)[number]['key'];
@@ -37,7 +37,8 @@ export function buildStages(events: AgentEvent[], running: boolean): StageState[
     // Fallback and escalation events belong to whichever stage was running when
     // they fired, so attach them there rather than dropping them. Escalation is
     // a headline efficiency signal; it must never disappear from the timeline.
-    const key = stage?.key ?? (e.type.startsWith('fallback_') ? openStage : null);
+    const floating = e.type.startsWith('fallback_') || e.type === 'task_created' || e.type === 'tool_completed';
+    const key = stage?.key ?? (floating ? (openStage ?? 'understand') : null);
     if (!key) continue;
     if (stage) openStage = stage.key;
     const list = byStage.get(key) ?? [];
@@ -51,21 +52,24 @@ export function buildStages(events: AgentEvent[], running: boolean): StageState[
   const lastIndex = STAGES.reduce(
     (acc, s, i) => (byStage.has(s.key) ? i : acc), -1);
 
-  return STAGES.map((s, i) => {
+  // A stage exists in the rail only once it has started. Skipped stages
+  // (a refusal never queries) simply never appear, and the only stage that
+  // can be active is the last one seen while the run is still going.
+  return STAGES.flatMap((s, i) => {
     const evs = byStage.get(s.key) ?? [];
+    if (!evs.length) return [];
     let status: StageStatus;
     if (failed && i === lastIndex) status = 'failed';
-    else if (evs.length) status = running && i === lastIndex ? 'active' : 'done';
-    else if (stopped || !running) status = i <= lastIndex ? 'skipped' : 'pending';
-    else status = i === lastIndex + 1 ? 'active' : 'pending';
-
+    else status = running && i === lastIndex ? 'active' : 'done';
     const first = evs[0], last = evs[evs.length - 1];
-    const durationMs = evs.length >= 1 && first && last
-      ? Math.max(0, new Date(last.at).getTime() - new Date(first.at).getTime())
-      : null;
-
-    return { key: s.key, label: s.label, status, events: evs, durationMs };
+    const durationMs = Math.max(0, new Date(last.at).getTime() - new Date(first.at).getTime());
+    return [{ key: s.key, label: s.label, status, events: evs, durationMs }];
   });
+}
+
+/** Human label for the stage an event belongs to, for the live indicator. */
+export function stageOf(type: string): string | null {
+  return STAGES.find(s => (s.events as readonly string[]).includes(type))?.label ?? null;
 }
 
 /** Human-readable facts pulled out of a stage's events, for the detail rows. */
@@ -108,6 +112,15 @@ export function stageDetail(stage: StageState): [string, string][] {
         break;
       case 'fallback_completed':
         out.push(['escalated', e.label]);
+        break;
+      case 'task_created':
+        out.push(['judge', e.label.replace(/^Judge: /, '')]);
+        break;
+      case 'task_completed':
+        out.push(['verdict', e.label.replace(/^Judge: /, '')]);
+        break;
+      case 'tool_completed':
+        out.push(['anomaly', e.label.replace(/^Anomaly check: /, '')]);
         break;
     }
   }

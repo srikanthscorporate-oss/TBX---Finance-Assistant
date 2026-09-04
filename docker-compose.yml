@@ -109,6 +109,7 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./infra/clickhouse/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+      - ./infra/clickhouse/memory.xml:/etc/clickhouse-server/config.d/memory.xml:ro
     networks: [data]
     ports: ["18123:8123"]   # local dev only; remove on the VPS
     healthcheck:
@@ -143,6 +144,8 @@ services:
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
       - redis_data:/data
+    ports:
+      - "127.0.0.1:16379:6379"   # loopback only, for local evaluation runs
     networks: [data]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]

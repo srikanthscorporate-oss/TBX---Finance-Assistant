@@ -55,7 +55,7 @@ export interface AssistantResponse {
   follow_up_suggestions: string[];
   duration_ms?: number | null;
   model_usage: { tier: string; model: string; purpose: string;
-                 prompt_tokens: number; completion_tokens: number }[];
+                 prompt_tokens: number; completion_tokens: number; ok: boolean }[];
 }
 
 export interface AgentEvent {
@@ -90,6 +90,14 @@ export interface Usage {
   latency_p95_ms: number;
   states: Record<string, number>;
   tier_calls: Record<string, number>;
+  time_split_ms?: { llm: number; query: number; other: number };
+  recent?: RecentRun[];
+}
+
+export interface RecentRun {
+  run_id: string; state: string; duration_ms: number | null;
+  llm_ms: number; query_ms: number; tokens: number;
+  model: string | null; switched: boolean; at: string;
 }
 
 export interface EvalCategory { total: number; passed: number; accuracy: number }
@@ -110,6 +118,8 @@ export interface EvalReport {
   grounding_rate?: number;
   verification_pass_rate?: number;
   hallucination_free_rate?: number;
+  rate_limited_calls?: number;
+  throttled?: boolean;
   efficiency?: {
     avg_llm_calls_per_turn: number;
     avg_tokens_per_turn: number;
@@ -119,4 +129,29 @@ export interface EvalReport {
     latency_p95_ms: number;
   };
   by_category?: Record<string, EvalCategory>;
+}
+
+export interface CatalogModel {
+  id: string; label: string; provider: string;
+  params_b: number; active_params_b: number | null; size_label: string;
+  free: boolean; verified: boolean; available: boolean; listed: boolean;
+  over_limit: boolean; note: string;
+}
+
+export interface ModelCatalog {
+  limit_b: number;
+  auto: { primary: string | null; alternate: string | null; policy: string };
+  models: CatalogModel[];
+  unlisted: { id: string; label: string; reason: string }[];
+  excluded: { id: string; reason: string }[];
+}
+
+export interface JudgeSummary {
+  enabled: boolean;
+  runs_scored: number;
+  avg_score: number | null;
+  cache: { plan: number; answer: number; miss: number; hit_rate: number };
+  models: Record<string, { plan_validity: number | null; samples: number; breaker_open_s: number; trips_last_hour: number }>;
+  recent: { score: number; state: string; tokens: number; duration_ms: number; model: string | null;
+            switched: boolean; notes: string[]; cache_hit: string | null; run_id: string }[];
 }

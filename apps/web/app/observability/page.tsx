@@ -1,6 +1,6 @@
 import Observability from '@/components/Observability';
 import Shell from '@/components/Shell';
-import { getEvaluationsServer, getUsageServer } from '@/lib/server-api';
+import { getEvaluationsServer, getJudgeServer, getUsageServer } from '@/lib/server-api';
 
 export const metadata = {
   title: 'Observability · StrawHat Finance Assistant',
@@ -11,7 +11,7 @@ export const metadata = {
 export const dynamic = 'force-dynamic';
 
 export default async function Page() {
-  const [usage, evals] = await Promise.all([getUsageServer(), getEvaluationsServer()]);
+  const [usage, evals, judge] = await Promise.all([getUsageServer(), getEvaluationsServer(), getJudgeServer()]);
   return (
     <Shell>
       <main className="mx-auto w-full max-w-6xl px-4 py-6">
@@ -22,7 +22,7 @@ export default async function Page() {
             counters about the model, not your financial records.
           </p>
         </div>
-        <Observability initialUsage={usage} initialEvals={evals} />
+        <Observability initialUsage={usage} initialEvals={evals} initialJudge={judge} />
       </main>
     </Shell>
   );

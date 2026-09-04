@@ -171,3 +171,41 @@ def format_count(value: float | int) -> str:
 
 def format_percent(value: float) -> str:
     return f"{value:.2f}%".replace(".00%", "%")
+
+
+# Intent-aware sentences for single-figure answers. Every value is a verified
+# fact; the only thing chosen here is the wording. Rendered at zero tokens.
+def template_answer(evidence: EvidencePackage, intent: str) -> ComposedAnswer | None:
+    f = evidence.fact_map()
+    ent = evidence.entities_resolved
+    period = evidence.resolved_period
+    vendor = ent.get("vendor_name")
+    category = ent.get("category")
+    n = evidence.total_record_count
+    when = f" in {period}" if period else ""
+    recs = f"across {n:,} transactions" if n else "with no matching transactions"
+
+    text: str | None = None
+    if intent == "vendor_spend" and "total" in f and vendor:
+        text = f"You spent {f['total'].formatted} with {vendor}{when}, {recs}."
+    elif intent == "category_spend" and "total" in f and category:
+        text = f"{category} spend{when} came to {f['total'].formatted}, {recs}."
+    elif intent in {"total_spend", "account_spend"} and "total" in f:
+        text = f"Total spend{when} was {f['total'].formatted}, {recs}."
+    elif intent == "vendor_payouts" and "total" in f:
+        who = f" to {vendor}" if vendor else ""
+        text = f"Payouts{who}{when} totalled {f['total'].formatted}, {recs.replace('transactions', 'payouts')}."
+    elif intent == "reconciliation_rate" and "rate" in f:
+        extra = ""
+        if "matched" in f and "unmatched" in f:
+            extra = f" ({f['matched'].formatted} matched, {f['unmatched'].formatted} not)"
+        text = f"{f['rate'].formatted} of transactions{when} are reconciled{extra}."
+    elif intent == "unreconciled" and "count" in f:
+        text = f"There are {f['count'].formatted} unreconciled transactions{when}."
+    elif "count" in f:
+        text = f"{f['count'].formatted} records match{when}."
+    elif "total" in f:
+        text = f"The total{when} is {f['total'].formatted}, {recs}."
+    if text is None:
+        return None
+    return ComposedAnswer(text=text, placeholders_used=list(f.keys()), fallback_used=False)

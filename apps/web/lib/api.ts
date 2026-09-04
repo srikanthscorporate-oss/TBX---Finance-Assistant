@@ -1,4 +1,4 @@
-import type { AgentEvent, AssistantResponse, DatasetInfo, EvalReport, Usage } from './types';
+import type { AgentEvent, AssistantResponse, DatasetInfo, EvalReport, JudgeSummary, ModelCatalog, Usage } from './types';
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? '';
 
@@ -17,12 +17,17 @@ export async function streamChat(
   message: string,
   conversationId: string | null,
   onEvent: (e: AgentEvent) => void,
+  model: string = 'auto',
+  resolvedVendorId?: string,
   signal?: AbortSignal,
 ): Promise<AssistantResponse> {
   const res = await fetch(`${BASE}/api/v1/chat/stream`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ message, conversation_id: conversationId }),
+    body: JSON.stringify({
+      message, conversation_id: conversationId, model,
+      resolved_vendor_id: resolvedVendorId ?? null,
+    }),
     signal,
   });
   if (!res.ok || !res.body) throw new Error(`request failed (${res.status})`);
@@ -70,5 +75,17 @@ export async function getUsage(): Promise<Usage> {
 export async function getEvaluations(): Promise<EvalReport> {
   const r = await fetch(`${BASE}/api/v1/admin/evaluations`, { cache: 'no-store' });
   if (!r.ok) throw new Error(`evaluations unavailable (${r.status})`);
+  return r.json();
+}
+
+export async function getModels(): Promise<ModelCatalog> {
+  const r = await fetch(`${BASE}/api/v1/models`, { cache: 'no-store' });
+  if (!r.ok) throw new Error(`model catalog unavailable (${r.status})`);
+  return r.json();
+}
+
+export async function getJudge(): Promise<JudgeSummary> {
+  const r = await fetch(`${BASE}/api/v1/admin/judge`, { cache: 'no-store' });
+  if (!r.ok) throw new Error(`judge unavailable (${r.status})`);
   return r.json();
 }

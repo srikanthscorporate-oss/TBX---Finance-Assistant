@@ -1,22 +1,21 @@
 'use client';
 
-import {
-  Broadcast, Database, Info, PulseIcon, Question, WarningOctagon,
-} from '@phosphor-icons/react';
-import type { DatasetInfo, Turn } from '@/lib/types';
+import { CaretRight, Database, Info, PulseIcon, Question, WarningOctagon } from '@phosphor-icons/react';
+import { useState } from 'react';
+import type { DatasetInfo, Evidence, Turn } from '@/lib/types';
 import { buildStages } from '@/lib/stages';
 import { exportUrl } from '@/lib/api';
-import { fullMoney, ms } from '@/lib/format';
-import Breakdown from './Breakdown';
+import { compactMoney, fullMoney, ms } from '@/lib/format';
+import { BarSeries, LineSeries, RingChart, SignalDots, TimingBar } from './charts';
 import EvidencePanel from './EvidencePanel';
 import StageRail from './StageRail';
 import { StatusPill } from './ui';
 
 const NON_ANSWER = {
-  clarification_required: { Icon: Question,       label: 'Needs one detail', cls: 'text-warning' },
-  data_unavailable:       { Icon: Database,       label: 'Not in this data', cls: 'text-muted' },
-  out_of_scope:           { Icon: Info,           label: 'Outside my scope', cls: 'text-muted' },
-  error:                  { Icon: WarningOctagon, label: 'Could not answer', cls: 'text-critical' },
+  clarification_required: { Icon: Question,       label: 'Waiting for your answer', cls: 'text-warning' },
+  data_unavailable:       { Icon: Database,       label: 'Not in this data',        cls: 'text-muted' },
+  out_of_scope:           { Icon: Info,           label: 'Outside my scope',        cls: 'text-muted' },
+  error:                  { Icon: WarningOctagon, label: 'Could not answer',        cls: 'text-critical' },
 } as const;
 
 function Idle({ dataset }: { dataset: DatasetInfo | null }) {
@@ -25,18 +24,13 @@ function Idle({ dataset }: { dataset: DatasetInfo | null }) {
       <PulseIcon size={26} className="text-muted" aria-hidden />
       <p className="text-[13px] font-medium">Nothing running</p>
       <p className="max-w-[42ch] text-[12px] leading-5 text-muted">
-        Ask a question and every step the assistant takes will appear here as it
-        happens: what it resolved, what it queried, and what it verified before
-        answering.
+        Ask a question on the left. Each stage appears here as it runs, then the
+        figure, the charts, and the evidence behind them.
       </p>
       {dataset && (
         <dl className="mt-2 grid w-full max-w-[300px] grid-cols-2 gap-x-4 gap-y-1.5 border-t border-line pt-3 text-left">
-          {[
-            ['Dataset', dataset.dataset_version],
-            ['Coverage', `${dataset.min_date} to ${dataset.max_date}`],
-            ['Vendors', String(dataset.vendor_count)],
-            ['Currency', dataset.currency],
-          ].map(([k, v]) => (
+          {[['Dataset', dataset.dataset_version], ['Coverage', `${dataset.min_date} to ${dataset.max_date}`],
+            ['Vendors', String(dataset.vendor_count)], ['Currency', dataset.currency]].map(([k, v]) => (
             <div key={k} className="contents">
               <dt className="text-[11px] text-muted">{k}</dt>
               <dd className="num truncate font-mono text-[11px] text-ink-2" title={v}>{v}</dd>
@@ -48,100 +42,176 @@ function Idle({ dataset }: { dataset: DatasetInfo | null }) {
   );
 }
 
-export default function RunPane({ turn, dataset }: {
-  turn: Turn | null;
-  dataset: DatasetInfo | null;
-}) {
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section>
+      <h3 className="mb-2.5 text-[11px] uppercase tracking-wide text-muted">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+/** Pick the visuals from what the evidence actually contains. */
+function Visuals({ ev, chartHint, exportHref }: { ev: Evidence; chartHint?: string | null; exportHref: string }) {
+  const facts = Object.fromEntries(ev.facts.map(f => [f.key, f]));
+  const rows = ev.breakdown;
+  const blocks: React.ReactNode[] = [];
+
+  // Reconciliation: a two-way status split is the one honest ring.
+  if (facts.rate && facts.matched && facts.unmatched) {
+    blocks.push(
+      <div key="recon" className="rounded border border-line p-3.5">
+        <p className="mb-2 text-[12px] text-ink-2">Reconciliation status</p>
+        <RingChart status centre={facts.rate.formatted} sub="matched"
+          parts={[{ label: 'Matched', value: Number(facts.matched.value) },
+                  { label: 'Not matched', value: Number(facts.unmatched.value) }]} />
+      </div>);
+  }
+
+  if (rows.length > 1) {
+    const isTime = chartHint === 'line';
+    const data = rows.map(r => ({ label: r.label, value: r.value }));
+    blocks.push(
+      <div key="series" className="rounded border border-line p-2 pt-3.5">
+        <div className="mb-1 flex items-center px-1.5">
+          <p className="text-[12px] text-ink-2">{isTime ? 'Over time' : 'By group'}</p>
+          <a href={exportHref} download className="ml-auto text-[11px] text-muted hover:text-ink">CSV</a>
+        </div>
+        {isTime
+          ? <LineSeries data={data} format={n => compactMoney(n, ev.currency)} height={190} />
+          : <BarSeries data={data} horizontal format={n => compactMoney(n, ev.currency)}
+                       height={Math.max(150, Math.min(rows.length * 24 + 36, 300))} />}
+      </div>);
+
+    // Share of the whole: top three plus the rest, never more slices than that.
+    if (!isTime && rows.length >= 3) {
+      const top = rows.slice(0, 3).map(r => ({ label: r.label, value: r.value }));
+      const rest = rows.slice(3).reduce((a, r) => a + r.value, 0);
+      const total = rows.reduce((a, r) => a + r.value, 0) || 1;
+      blocks.push(
+        <div key="share" className="rounded border border-line p-3.5">
+          <p className="mb-2 text-[12px] text-ink-2">Share of the total</p>
+          <RingChart centre={`${Math.round((top[0].value / total) * 100)}%`} sub={top[0].label.split(' ')[0]}
+            parts={rest > 0 ? [...top.slice(0, 2), { label: 'Everything else', value: rest + top[2].value }] : top} />
+        </div>);
+    }
+  }
+  if (!blocks.length) return null;
+  return <div className="grid gap-3 sm:grid-cols-2">{blocks}</div>;
+}
+
+export default function RunPane({ turn, dataset }: { turn: Turn | null; dataset: DatasetInfo | null }) {
+  const [showEvidence, setShowEvidence] = useState(false);
   if (!turn) return <Idle dataset={dataset} />;
 
   const res = turn.response;
-  const stages = buildStages(turn.events, turn.running);
   const ev = res?.evidence;
+  const stages = buildStages(turn.events, turn.running);
   const headline = ev?.facts.find(f => ['total', 'shown_total', 'count', 'rate'].includes(f.key));
   const meta = res && res.state !== 'answer' ? NON_ANSWER[res.state] : null;
-  const tokens = (res?.model_usage ?? []).reduce((a, u) => a + u.prompt_tokens + u.completion_tokens, 0);
-  const escalated = (res?.model_usage ?? []).some(u => u.tier === 'escalation');
-  const models = [...new Set((res?.model_usage ?? []).map(u => u.model.split('/').pop()!))];
+
+  const calls = res?.model_usage ?? [];
+  const llmMs = calls.reduce((a, u) => a + (u as { duration_ms?: number }).duration_ms!, 0) || 0;
+  const queryMs = ev?.query_duration_ms ?? 0;
+  const totalMs = res?.duration_ms ?? 0;
+  const otherMs = Math.max(0, totalMs - llmMs - queryMs);
+  const tokens = calls.reduce((a, u) => a + u.prompt_tokens + u.completion_tokens, 0);
+  const switched = calls.some(u => ['alternate', 'fallback', 'regional'].includes(u.tier) && u.ok);
+
+  const exportHref = exportUrl({
+    intent: String(res?.plan?.intent ?? 'total_spend'),
+    group_by: String(res?.plan?.group_by ?? 'vendor'),
+    metric: String(res?.plan?.metric ?? 'sum'),
+    relative: (res?.plan?.date_range as { relative?: string })?.relative,
+    vendor_id: res?.plan?.vendor_id as string | undefined,
+    category: res?.plan?.category as string | undefined,
+  });
 
   return (
     <div className="flex h-full flex-col">
-      {/* Live status strip ------------------------------------------------ */}
       <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
         {turn.running ? (
           <span className="flex items-center gap-1.5 text-[11.5px] text-accent">
-            <Broadcast size={13} weight="fill" aria-hidden className="spin" />
-            Working
+            <PulseIcon size={13} weight="fill" aria-hidden className="spin" /> Working
           </span>
-        ) : res?.state === 'answer' ? (
-          <StatusPill kind="good">Answered</StatusPill>
-        ) : meta ? (
+        ) : res?.state === 'answer' ? <StatusPill kind="good">Answered</StatusPill>
+        : meta ? (
           <span className={`flex items-center gap-1.5 text-[11.5px] ${meta.cls}`}>
-            <meta.Icon size={13} weight="fill" aria-hidden />
-            {meta.label}
+            <meta.Icon size={13} weight="fill" aria-hidden />{meta.label}
           </span>
         ) : null}
-
-        {escalated && (
-          <StatusPill kind="warning">Escalated to a larger model</StatusPill>
-        )}
-
+        {switched && <StatusPill kind="warning">Needed a second model</StatusPill>}
         <p className="num ml-auto font-mono text-[11px] text-muted">
-          {[
-            res?.duration_ms ? ms(res.duration_ms) : null,
-            tokens ? `${tokens.toLocaleString()} tok` : null,
-            res?.model_usage?.length ? `${res.model_usage.length} calls` : null,
-            models.length ? models.join(', ') : null,
-          ].filter(Boolean).join('  ')}
+          {[totalMs ? ms(totalMs) : null, tokens ? `${tokens.toLocaleString()} tok` : null]
+            .filter(Boolean).join('   ')}
         </p>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-        {/* Headline figure. A number this important is not a chart. */}
-        {headline && (
-          <div>
-            <p className="text-[11px] uppercase tracking-wide text-muted">
-              {ev?.entities_resolved?.vendor_name
-                ? `${ev.entities_resolved.vendor_name}, ${ev?.resolved_period ?? 'all time'}`
-                : (ev?.resolved_period ?? 'All time')}
-            </p>
-            <p className="num mt-1 font-mono text-[30px] leading-none tracking-tight">
-              {headline.formatted}
-            </p>
-            <p className="mt-1.5 text-[11.5px] text-muted">
-              {headline.key === 'shown_total'
-                ? 'Combined value of the groups shown below, limited by the row cap.'
-                : `Computed across ${ev?.total_record_count.toLocaleString()} records.`}
-            </p>
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overflow-x-hidden p-4 [overflow-wrap:anywhere]">
+        {headline && ev && (
+          <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+            <div>
+              <p className="text-[11px] uppercase tracking-wide text-muted">
+                {ev.entities_resolved?.vendor_name
+                  ? `${ev.entities_resolved.vendor_name}, ${ev.resolved_period ?? 'all time'}`
+                  : (ev.resolved_period ?? 'All time')}
+              </p>
+              <p className="num mt-1 font-mono text-[34px] leading-none tracking-tight">{headline.formatted}</p>
+              <p className="mt-1.5 text-[11.5px] text-muted">
+                {headline.key === 'shown_total'
+                  ? 'Combined value of the groups shown, limited by the row cap.'
+                  : `Computed across ${ev.total_record_count.toLocaleString()} records.`}
+              </p>
+            </div>
+            {ev.confidence && (
+              <div className="rounded border border-line px-3 py-2">
+                <p className="text-[10.5px] uppercase tracking-wide text-muted">Confidence</p>
+                <p className={`num font-mono text-[18px] ${
+                  ev.confidence.band === 'high' ? 'text-good' : ev.confidence.band === 'medium' ? 'text-warning' : 'text-critical'}`}>
+                  {Math.round(ev.confidence.score * 100)}%
+                </p>
+              </div>
+            )}
           </div>
         )}
 
-        {/* The alive part: stage-by-stage progress. */}
-        <section>
-          <h3 className="mb-2.5 text-[11px] uppercase tracking-wide text-muted">Pipeline</h3>
-          <StageRail stages={stages} />
-        </section>
+        <Section title="Pipeline"><StageRail stages={stages} /></Section>
 
-        {ev && ev.breakdown.length > 0 && (
-          <Breakdown
-            rows={ev.breakdown}
-            chartHint={res?.chart_hint}
-            currency={ev.currency}
-            exportHref={exportUrl({
-              intent: String(res?.plan?.intent ?? 'total_spend'),
-              group_by: String(res?.plan?.group_by ?? 'vendor'),
-              metric: String(res?.plan?.metric ?? 'sum'),
-              relative: (res?.plan?.date_range as { relative?: string })?.relative,
-              vendor_id: res?.plan?.vendor_id as string | undefined,
-              category: res?.plan?.category as string | undefined,
-            })}
-          />
+        {totalMs > 0 && (
+          <Section title="Where the time went">
+            <TimingBar llm={llmMs} query={queryMs} other={otherMs} />
+          </Section>
         )}
 
-        {ev && <EvidencePanel evidence={ev} />}
+        {ev && (
+          <Section title="Visuals">
+            <Visuals ev={ev} chartHint={res?.chart_hint} exportHref={exportHref} />
+            {!ev.breakdown.length && !ev.facts.find(f => f.key === 'rate') && (
+              <p className="text-[11.5px] text-muted">A single figure. Ask for a breakdown or a trend to see it charted.</p>
+            )}
+          </Section>
+        )}
+
+        {ev?.confidence && (
+          <Section title="Confidence signals"><SignalDots signals={ev.confidence.signals} /></Section>
+        )}
+
+        {ev && (
+          <section>
+            <button onClick={() => setShowEvidence(v => !v)} aria-expanded={showEvidence}
+              className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted hover:text-ink">
+              <CaretRight size={11} weight="bold" aria-hidden className={`transition-transform ${showEvidence ? 'rotate-90' : ''}`} />
+              Evidence
+              <span className="normal-case tracking-normal">
+                {ev.verification.checks.filter(c => c.passed).length} of {ev.verification.checks.length} checks, SQL, source rows
+              </span>
+            </button>
+            {showEvidence && <EvidencePanel evidence={ev} />}
+          </section>
+        )}
 
         {turn.error && (
-          <p className="rounded border border-critical/40 bg-critical/[.07] px-3 py-2.5
-                        text-[12.5px] text-critical">{turn.error}</p>
+          <p className="rounded border border-critical/40 bg-critical/[.07] px-3 py-2.5 text-[12.5px] text-critical">{turn.error}</p>
         )}
       </div>
     </div>

@@ -178,6 +178,7 @@ def main() -> int:
     calls: list[int] = []
     escalations = 0
     errors = 0
+    rate_limited = 0
 
     print(f"running {len(questions)} questions against {args.api}\n")
     for item in questions:
@@ -199,9 +200,18 @@ def main() -> int:
             latencies.append(elapsed)
 
             usage = res.get("model_usage", [])
+            # A throttled provider degrades the run; count it so the report
+            # can say so instead of presenting a degraded score as the truth.
+            rate_limited += sum(1 for u in usage
+                                if not u.get("ok") and "rate limit" in (u.get("error") or "").lower())
+            if "rate limited" in (res.get("message") or "").lower():
+                rate_limited += 1          # refused before any call: still throttling
             calls.append(len(usage))
             tokens.append(sum(u["prompt_tokens"] + u["completion_tokens"] for u in usage))
-            if any(u["tier"] == "escalation" for u in usage):
+            # Runs that needed a SECOND model (alternate or another provider).
+            # There is no larger-model tier any more, so this is a switch rate.
+            if any(u["tier"] in ("alternate", "fallback", "regional") and u.get("ok")
+                   for u in usage):
                 escalations += 1
 
             scored = evaluate_turn(res, turn, ind)
@@ -236,10 +246,12 @@ def main() -> int:
     total = sum(c["total"] for c in by_category.values())
     passed = sum(c["passed"] for c in by_category.values())
 
-    def rate(name: str) -> float | None:
+    def rate(name: str) -> float:
+        # 0.0, not None, when nothing could be measured: a degraded run must
+        # still produce a complete, comparable report (it is stamped throttled).
         t = sum(c[f"check_{name}_total"] for c in by_category.values())
         p = sum(c[f"check_{name}_passed"] for c in by_category.values())
-        return round(p / t, 4) if t else None
+        return round(p / t, 4) if t else 0.0
 
     # Record which planner produced these numbers. A run against the offline
     # stub measures the DETERMINISTIC pipeline (resolution, dates, compilation,
@@ -259,7 +271,10 @@ def main() -> int:
             "Stub planner: measures the deterministic pipeline only; real NLU "
             "accuracy is unmeasured until this is re-run against a live model."
             if planner == "stub" else
-            "Measured end to end against a live model."),
+            ("Measured end to end against a live model."
+             + (f" THROTTLED: {rate_limited} model calls hit a provider rate limit during "
+                "this run, so these scores understate the pipeline. Re-run when quota has "
+                "recovered." if rate_limited else ""))),
         "questions": len(questions),
         "turns": total,
         "overall_accuracy": round(passed / total, 4) if total else 0,
@@ -273,6 +288,8 @@ def main() -> int:
         "hallucination_free_rate": rate("no_unverified_figures"),
         "no_hedging_rate": rate("no_hedging"),
         "transport_errors": errors,
+        "rate_limited_calls": rate_limited,
+        "throttled": rate_limited > 0,
         "efficiency": {
             "avg_llm_calls_per_turn": round(statistics.mean(calls), 2) if calls else 0,
             "avg_tokens_per_turn": round(statistics.mean(tokens), 1) if tokens else 0,
@@ -302,6 +319,8 @@ def main() -> int:
         v = report[k]
         print(f"{k:22}{'  n/a' if v is None else f'{v:.1%}':>8}")
     e = report["efficiency"]
+    if rate_limited:
+        print(f"\nWARNING: {rate_limited} rate-limited model calls; this run is degraded by throttling")
     print(f"\nllm calls/turn        {e['avg_llm_calls_per_turn']}")
     print(f"tokens/turn           {e['avg_tokens_per_turn']}")
     print(f"escalation rate       {e['escalation_rate']:.1%}")

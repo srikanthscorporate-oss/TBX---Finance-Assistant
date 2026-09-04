@@ -12,7 +12,10 @@ GRANT tbx_readonly TO tbx_agent;
 CREATE SETTINGS PROFILE IF NOT EXISTS tbx_agent_profile SETTINGS
     max_execution_time = 10 READONLY,
     max_result_rows = 50000 READONLY,
-    max_rows_to_read = 20000000 READONLY,
+    -- The prototype is tested at 20M records and ClickHouse reads whole
+    -- granules, so a ceiling AT 20M rejects a full-table aggregate. 100M
+    -- leaves headroom while still bounding a runaway scan.
+    max_rows_to_read = 100000000 READONLY,
     max_memory_usage = 2000000000 READONLY,
     readonly = 1;
 

@@ -1,3 +1,24 @@
+> **Status, 2026-09-05.** This is the day-one review of `plan.md`, kept as written.
+> Several of its recommendations were overruled or overtaken, and a reader should
+> know which:
+>
+> - **Section 7 arrived** (20B parameter ceiling, 20M-record test). Both are now
+>   enforced in code: the model catalog refuses anything over the ceiling at
+>   startup, and G14 verifies 20,000,166 rows with every query under 210 ms.
+> - **ClickHouse was kept** (the review suggested DuckDB) and is validated at scale;
+>   DuckDB is not used anywhere, so the single-engine rule holds.
+> - **The escalation tier is gone**, not capped. Recovery is retry-same-model, then
+>   a different compliant model. Larger-by-default is scored down.
+> - **A deterministic judge** now gates relevance, caches plans and answers in
+>   Redis, chooses template versus model composition, spawns the anomaly agent,
+>   and breaks circuits on rate limits. None of that adds a model call.
+> - **Langfuse** is defined behind a compose profile and not part of the verified
+>   path; observability is served by the app's own `/observability` page.
+> - The placeholder-interpolation composer, dataset-anchored dates, vendor
+>   ambiguity handling, and the golden evaluation set were all built as proposed.
+>
+> The sections below are unchanged from 2026-09-04.
+
 # Plan Review & Required Changes
 
 **Reviewed:** `problem statement.pdf`, `architecture.png`, `plan.md`, `solution-design_*.html`

@@ -20,10 +20,13 @@ router = APIRouter(prefix="/api/v1", tags=["chat"])
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=2000)
+    # Empty is allowed when answering a clarification by option id.
+    message: str = Field(default="", max_length=2000)
     conversation_id: str | None = None
     # Set when the user picks an option from a clarification prompt.
     resolved_vendor_id: str | None = None
+    # "auto" (policy routing) or a catalog model id chosen from the dropdown.
+    model: str | None = "auto"
 
 
 @router.post("/chat", response_model=AssistantResponse)
@@ -34,18 +37,18 @@ async def chat(req: ChatRequest) -> AssistantResponse:
     conversation_id = req.conversation_id or uuid.uuid4().hex
     state = app_state.conversation(conversation_id)
 
-    message = req.message
-    if req.resolved_vendor_id and state.last_plan is not None:
-        # The user answered a clarification: pin the vendor and re-run the
-        # previous plan rather than re-parsing the original question.
-        state.last_plan.vendor_id = req.resolved_vendor_id
-        state.last_plan.vendor_name = None
-
     pipeline = app_state.pipeline()
     started = time.perf_counter()
-    result = await asyncio.to_thread(pipeline.run, message, state)
+    if req.resolved_vendor_id:
+        # The user answered a clarification: complete the parked plan with the
+        # chosen vendor. The original sentence is not re-planned.
+        result = await asyncio.to_thread(pipeline.run_resolved, req.resolved_vendor_id,
+                                         state, req.model)
+    else:
+        result = await asyncio.to_thread(pipeline.run, req.message, state, req.model)
     result.duration_ms = round((time.perf_counter() - started) * 1000, 1)
     app_state.record_run(result)
+    app_state.save_conversation(state)
     return result
 
 
@@ -70,9 +73,14 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         pipeline = app_state.pipeline(on_event=on_event)
         try:
             started = time.perf_counter()
-            result = await asyncio.to_thread(pipeline.run, req.message, state)
+            if req.resolved_vendor_id:
+                result = await asyncio.to_thread(pipeline.run_resolved,
+                                                 req.resolved_vendor_id, state, req.model)
+            else:
+                result = await asyncio.to_thread(pipeline.run, req.message, state, req.model)
             result.duration_ms = round((time.perf_counter() - started) * 1000, 1)
             app_state.record_run(result)
+            app_state.save_conversation(state)
             await queue.put(("result", result))
         except Exception as e:  # noqa: BLE001
             await queue.put(("error", str(e)))

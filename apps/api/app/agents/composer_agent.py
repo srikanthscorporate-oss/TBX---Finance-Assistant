@@ -1,0 +1,85 @@
+"""Turning a verified evidence package into a sentence.
+
+Model call two of two, and the narrowest call in the system: the model gets a
+whitelist of placeholder keys and writes prose around them. It never sees a
+rendered figure it could copy incorrectly; the server substitutes verified
+values after generation.
+
+Recovery never goes to a larger model: retry the same model with the rejection
+reason, then a compliant alternate (auto mode only), then a deterministic
+template. A stilted sentence built from verified values beats a fluent one we
+cannot vouch for.
+"""
+from __future__ import annotations
+
+from ..contracts.events import EventType
+from ..contracts.evidence import EvidencePackage
+from ..llm.router import ModelRouter, ModelSpec, Tier
+from ..services import composer as comp
+from . import prompts
+from .context import RunContext
+
+FACT_DESCRIPTIONS = {
+    "shown_total": ("the combined value of ONLY the groups listed in the table "
+                    "below, which was cut off by a row limit. Describe it as the "
+                    "top groups shown, never as a total"),
+    "total": "the total value",
+    "count": "the number of matching records",
+    "rate": "the percentage",
+    "record_count": "how many records the figure is based on",
+    "top_value": "the largest single group's value",
+    "group_count": "how many groups are shown",
+    "matched": "how many records reconciled",
+    "unmatched": "how many records did not reconcile",
+}
+
+
+class Composer:
+    def __init__(self, router: ModelRouter):
+        self.router = router
+
+    def compose(self, question: str, evidence: EvidencePackage, rc: RunContext,
+                pinned: ModelSpec | None = None) -> str:
+        system = self._prompt(question, evidence)
+        _, user_t = prompts.load("response_composer_v1")
+        user = prompts.fill(user_t)
+
+        attempts: list[tuple[Tier, str]] = [(Tier.PRIMARY, "compose"),
+                                            (Tier.PRIMARY, "compose_retry")]
+        if pinned is None and self.router.available(Tier.ALTERNATE):
+            attempts.append((Tier.ALTERNATE, "compose_alternate"))
+
+        last_error = ""
+        for tier, purpose in attempts:
+            corrective = (f"\n\nYour previous attempt was rejected: {last_error} Fix it."
+                          if last_error else "")
+            try:
+                draft = self.router.call(
+                    tier=tier, purpose=purpose, system=system + corrective, user=user,
+                    ledger=rc.ledger, max_tokens=800, pinned=pinned)
+                return comp.render(draft, evidence).text
+            except comp.ComposeError as e:
+                last_error = str(e)
+                rc.emit(EventType.FALLBACK_STARTED,
+                        "Draft rejected by the grounding check", reason=last_error[:160])
+            except Exception as e:  # noqa: BLE001 -- provider failure
+                last_error = str(e)
+                break
+
+        rc.emit(EventType.FALLBACK_COMPLETED, "Used the deterministic answer template")
+        return comp.deterministic_fallback(evidence, question).text
+
+    def _prompt(self, question: str, evidence: EvidencePackage) -> str:
+        allowed = comp.allowed_keys(evidence)
+        descriptions = "\n".join(
+            f"- {{{{{f.key}}}}} = "
+            + FACT_DESCRIPTIONS.get(f.key, f"the {f.kind} value")
+            + (f" (over {f.record_count} records)" if f.record_count else "")
+            for f in evidence.facts)
+        system_t, _ = prompts.load("response_composer_v1")
+        return prompts.fill(
+            system_t,
+            allowed_placeholders=", ".join("{{" + k + "}}" for k in allowed),
+            fact_descriptions=descriptions,
+            question=question,
+            period_placeholder_note=evidence.resolved_period or "the whole dataset")

@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUp, CircleNotch, Sparkle } from '@phosphor-icons/react';
 import { getDataset, streamChat } from '@/lib/api';
 import type { AgentEvent, DatasetInfo, Turn } from '@/lib/types';
+import { stageOf } from '@/lib/stages';
+import ModelPicker, { AUTO } from './ModelPicker';
 import RunPane from './RunPane';
 import { Skeleton } from './ui';
 
@@ -19,6 +21,7 @@ export default function Workbench() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [model, setModel] = useState<string>(AUTO);
   const [dataset, setDataset] = useState<DatasetInfo | null>(null);
   const [datasetError, setDatasetError] = useState<string | null>(null);
   const conversationId = useRef<string | null>(null);
@@ -32,20 +35,38 @@ export default function Workbench() {
     feedEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [turns.length]);
 
-  const ask = useCallback(async (question: string) => {
+  const ask = useCallback(async (question: string, resolvedVendorId?: string) => {
     const q = question.trim();
-    if (!q || busy) return;
+    if ((!q && !resolvedVendorId) || busy) return;
     setBusy(true);
     setInput('');
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setTurns(t => [...t, { id, question: q, events: [], running: true }]);
     setSelectedId(id);
 
-    const onEvent = (e: AgentEvent) =>
-      setTurns(t => t.map(x => (x.id === id ? { ...x, events: [...x.events, e] } : x)));
+    // Events arrive in bursts (plan, query and verify can complete within a
+    // few ms of each other). Release them one at a time with a minimum dwell,
+    // so exactly one stage is ever "running" and each appears as it starts.
+    const queue: AgentEvent[] = [];
+    let draining = false;
+    const DWELL_MS = 320;
+    const drain = async () => {
+      if (draining) return;
+      draining = true;
+      while (queue.length) {
+        const e = queue.shift()!;
+        setTurns(t => t.map(x => (x.id === id ? { ...x, events: [...x.events, e] } : x)));
+        const newStage = stageOf(e.type);
+        if (newStage) await new Promise(r => setTimeout(r, DWELL_MS));
+      }
+      draining = false;
+    };
+    const onEvent = (e: AgentEvent) => { queue.push(e); void drain(); };
 
     try {
-      const res = await streamChat(q, conversationId.current, onEvent);
+      const res = await streamChat(q, conversationId.current, onEvent, model, resolvedVendorId);
+      // Let the last queued stages land before the answer replaces the spinner.
+      while (queue.length || draining) await new Promise(r => setTimeout(r, 40));
       conversationId.current = res.conversation_id;
       setTurns(t => t.map(x => (x.id === id ? { ...x, response: res, running: false } : x)));
     } catch (err) {
@@ -54,7 +75,7 @@ export default function Workbench() {
     } finally {
       setBusy(false);
     }
-  }, [busy]);
+  }, [busy, model]);
 
   // The right pane follows the live run, or whichever turn the user selected.
   const active = useMemo(
@@ -128,9 +149,17 @@ export default function Workbench() {
                   >
                     <p className="text-[13px] font-medium leading-5">{turn.question}</p>
                     {turn.running && (
-                      <p className="mt-1.5 flex items-center gap-1.5 text-[11.5px] text-accent">
-                        <CircleNotch size={12} weight="bold" aria-hidden className="spin" />
-                        Working
+                      <p className="mt-2 flex items-center gap-2 text-[11.5px] text-accent" aria-live="polite">
+                        <span className="flex gap-1" aria-hidden>
+                          <span className="dot h-1.5 w-1.5 rounded-pill bg-accent" />
+                          <span className="dot h-1.5 w-1.5 rounded-pill bg-accent [animation-delay:.15s]" />
+                          <span className="dot h-1.5 w-1.5 rounded-pill bg-accent [animation-delay:.3s]" />
+                        </span>
+                        {(() => {
+                          const last = [...turn.events].reverse().find(e => stageOf(e.type));
+                          const st = last ? stageOf(last.type) : null;
+                          return st ? `${st}: ${last!.label}` : 'Starting';
+                        })()}
                       </p>
                     )}
                     {said && <p className="mt-1.5 text-[12.5px] leading-5 text-ink-2">{said}</p>}
@@ -140,15 +169,33 @@ export default function Workbench() {
                   </button>
 
                   {turn.response?.clarification?.options?.length ? (
-                    <div className="mt-1.5 flex flex-wrap gap-1.5">
-                      {turn.response.clarification.options.map(o => (
-                        <button key={o.value} disabled={busy}
-                          onClick={() => ask(`${turn.question} (${o.label})`)}
-                          className="rounded-sm border border-line bg-surface px-2 py-1 text-[11.5px]
-                                     transition-colors hover:border-accent disabled:opacity-50">
-                          {o.label}
-                        </button>
-                      ))}
+                    <div className={`mt-2 rounded border px-3 py-2.5 ${
+                      turn.response.clarification.field === 'guided' ? 'border-line bg-raised' : 'border-warning/40 bg-warning/[.06]'}`}>
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-muted">
+                        {turn.response.clarification.field === 'vendor_name' && turn.response.state === 'clarification_required'
+                          ? 'Which one did you mean?' : turn.response.clarification.question}
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {turn.response.clarification.options.map(o => (
+                          <button key={o.value} disabled={busy}
+                            onClick={() => turn.response!.state === 'clarification_required'
+                              ? ask(`${turn.question}  (${o.label})`, o.value)
+                              : ask(o.value.startsWith('V') && turn.response!.clarification!.field === 'vendor_name'
+                                  ? o.label : (turn.response!.clarification!.field === 'vendor_name'
+                                      ? turn.question.replace(/with .+?( last| this| in |$)/, `with ${o.label}$1`) : o.value))}
+                            className="rounded-sm border border-line bg-surface px-2.5 py-1.5 text-[12px]
+                                       transition-colors hover:border-accent active:scale-[.98]
+                                       disabled:opacity-50">
+                            {o.label}
+                            {o.hint && <span className="ml-1.5 text-muted">{o.hint}</span>}
+                          </button>
+                        ))}
+                      </div>
+                      {turn.response.state === 'clarification_required' && (
+                        <p className="mt-2 text-[11px] leading-4 text-muted">
+                          The question is kept as you wrote it; only the vendor is filled in.
+                        </p>
+                      )}
                     </div>
                   ) : null}
 
@@ -172,13 +219,23 @@ export default function Workbench() {
 
         <form onSubmit={e => { e.preventDefault(); ask(input); }}
               className="border-t border-line bg-bg px-4 py-3">
-          <div className="flex items-center gap-2">
+          <div className="flex items-end gap-2">
             <label htmlFor="q" className="sr-only">Your question</label>
-            <input id="q" value={input} onChange={e => setInput(e.target.value)} disabled={busy}
-              placeholder="Ask about spend, payouts or reconciliation"
-              className="flex-1 rounded border border-line bg-surface px-3 py-2.5 text-[13px] text-ink
-                         outline-none transition-colors placeholder:text-muted
-                         focus:border-accent disabled:opacity-60" />
+            <textarea id="q" value={input} rows={2} disabled={busy}
+              onChange={e => {
+                setInput(e.target.value);
+                // Grow with content, up to about eight lines, then scroll.
+                e.target.style.height = 'auto';
+                e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(input); }
+              }}
+              placeholder="Ask about spend, payouts or reconciliation. Shift+Enter for a new line."
+              className="min-h-[64px] flex-1 resize-none rounded border border-line bg-surface px-3 py-2.5
+                         text-[13px] leading-5 text-ink outline-none transition-colors
+                         placeholder:text-muted focus:border-accent disabled:opacity-60" />
+            <ModelPicker value={model} onChange={setModel} disabled={busy} />
             <button type="submit" disabled={busy || !input.trim()} aria-label="Send question"
               className="grid h-[42px] w-[42px] place-items-center rounded bg-accent text-accent-ink
                          transition-transform active:scale-[.97] disabled:opacity-40">
@@ -190,7 +247,10 @@ export default function Workbench() {
       </section>
 
       {/* Live operations -------------------------------------------------- */}
-      <section aria-label="Run details" aria-live="polite" className="min-h-0 bg-surface">
+      {/* The pane itself clips sideways overflow, in every state, so no child
+          can ever widen the page. */}
+      <section aria-label="Run details" aria-live="polite"
+               className="min-h-0 overflow-x-hidden bg-surface [overflow-wrap:anywhere]">
         <RunPane turn={active} dataset={dataset} />
       </section>
     </div>

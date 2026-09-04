@@ -1,160 +1,164 @@
-"""The orchestration pipeline.
+"""Orchestration.
 
-Happy path is TWO LLM calls: one structured plan, one composed sentence.
-Everything between them -- entity resolution, date resolution, compilation,
-execution, verification, confidence, evidence -- is deterministic Python with no
-model involvement. That is what makes the numbers defensible and what keeps
-latency and token cost low.
+The happy path is TWO model calls: one structured plan, one composed sentence.
+Everything between them is deterministic Python with no model involvement, and
+that is what makes the numbers defensible while keeping latency and token cost
+down.
 
-Escalation to a larger model happens only after a *measured* failure of the
-small model (an unparseable or invalid plan, or two rejected drafts), never on a
-guess about how hard the question looks.
+This module decides WHAT happens and in what order. It delegates the how:
+  planner.py           the plan call, validation and escalation
+  composer_agent.py    the compose call, retry and template fallback
+  evidence_builder.py  assembling the evidence package
+  services/*           resolution, dates, compilation, verification, confidence
 """
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
-from datetime import date
-from typing import Any, Callable, Iterable
+from typing import Callable, Iterable
 
 from pydantic import ValidationError
 
-from ..contracts.enums import ConfidenceBand, Intent, Metric, ResponseState
+from ..contracts.enums import Metric, ResponseState
+from ..contracts.evidence import EvidencePackage
+from ..llm.router import AllModelsRateLimited, Tier
 from ..contracts.events import AgentEvent, EventType
-from ..contracts.evidence import (
-    BreakdownRow, ComputedFact, EvidencePackage, SourceRecordRef,
-)
-from ..contracts.plan import DateRange, FinanceQueryPlan, PlanDelta
 from ..contracts.response import AssistantResponse, Clarification, ClarificationOption
 from ..db.clickhouse import ClickHouseClient, QueryError
-from ..llm.router import ModelRouter, Tier, UsageLedger, extract_json
-from ..services import composer as comp
+from ..llm.router import ModelRouter, ModelSpec
 from ..services import confidence as conf
 from ..services import verification as verif
 from ..services.compiler import CompilationError, compile_plan
-from ..services.dates import DatasetCalendar, DateResolutionError, resolve
-from ..services.resolver import MatchKind, VendorRecord, resolve_vendor
-from . import prompts
+from ..services.dates import DateResolutionError, resolve
+from ..services.resolver import MatchKind, resolve_vendor
+from . import anomaly as anomaly_agent
+from . import relevance, suggestions
+from .composer_agent import Composer
+from .context import (CAPABILITIES, GUIDED_QUESTIONS, OUT_OF_SCOPE_MESSAGE,
+                      ConversationState, DatasetContext, RunContext)
+from .evidence_builder import EvidenceBuilder, record_count, split_result
+from .judge import Dispatch, Judge
+from .planner import Planner, PlanningFailed
+from ..services import composer as comp_svc
+from ..services.cache import cache as get_cache
 
-CAPABILITIES = [
-    "Spend by vendor, category, account or period",
-    "Vendor payouts and their status",
-    "Reconciliation status, unreconciled transactions and reconciliation rate",
-    "Transaction lookup and filtering",
-    "Period-over-period comparisons and trends",
-]
-
-
-@dataclass
-class DatasetContext:
-    """Everything the pipeline needs to know about the loaded data."""
-
-    calendar: DatasetCalendar
-    vendors: list[VendorRecord]
-    categories: list[str]
-    currency: str
-    dataset_version: str = "unknown"
-
-
-@dataclass
-class ConversationState:
-    """Multi-turn memory. Deliberately small: the last validated plan is all we
-    need for coreference, and it is far more reliable than replaying raw chat."""
-
-    conversation_id: str
-    last_plan: FinanceQueryPlan | None = None
-    last_period_label: str | None = None
-    turns: int = 0
-
-
-@dataclass
-class RunContext:
-    run_id: str
-    conversation_id: str
-    ledger: UsageLedger = field(default_factory=UsageLedger)
-    events: list[AgentEvent] = field(default_factory=list)
-    _seq: int = 0
-
-    def emit(self, type_: EventType, label: str, **detail: Any) -> AgentEvent:
-        self._seq += 1
-        ev = AgentEvent(type=type_, run_id=self.run_id, seq=self._seq,
-                        label=label, detail=detail)
-        self.events.append(ev)
-        return ev
+# Re-exported so existing callers keep importing these from here.
+__all__ = ["Pipeline", "ConversationState", "DatasetContext", "RunContext", "CAPABILITIES"]
 
 
 class Pipeline:
     def __init__(self, ch: ClickHouseClient, router: ModelRouter, ctx: DatasetContext,
-                 on_event: Callable[[AgentEvent], None] | None = None):
+                 on_event: Callable[[AgentEvent], None] | None = None,
+                 judge: Judge | None = None):
         self.ch = ch
-        self.router = router
         self.ctx = ctx
         self.on_event = on_event
+        self.planner = Planner(router, ctx)
+        self.composer = Composer(router)
+        self.evidence = EvidenceBuilder(ctx)
+        self.judge = judge or Judge(get_cache(), ctx.dataset_version)
+        router.judge = self.judge
 
     # -- public ------------------------------------------------------------
 
-    def run(self, question: str, state: ConversationState) -> AssistantResponse:
+    def run(self, question: str, state: ConversationState,
+            model_choice: str | None = None) -> AssistantResponse:
         rc = RunContext(run_id=f"run_{uuid.uuid4().hex[:12]}",
-                        conversation_id=state.conversation_id)
-        self._ev(rc, EventType.RUN_STARTED, "Understanding your question",
-                 question=question, turn=state.turns + 1)
-
+                        conversation_id=state.conversation_id,
+                        on_event=self.on_event)
         try:
-            return self._run_inner(question, state, rc)
+            pinned = self.planner.router.spec_for_choice(model_choice)
+        except ValueError as e:
+            rc.emit(EventType.RUN_FAILED, "Model not permitted", error=str(e))
+            return self._respond(rc, ResponseState.ERROR, message=str(e))
+        rc.emit(EventType.RUN_STARTED, "Understanding your question",
+                question=question, turn=state.turns + 1,
+                model=pinned.model if pinned else "auto")
+        # A new question supersedes any clarification still waiting.
+        state.pending_plan = state.pending_question = None
+        if not question.strip():
+            return self._respond(rc, ResponseState.ERROR, message="Please type a question.")
+        try:
+            return self._run(question, state, rc, pinned)
+        except AllModelsRateLimited as e:
+            rc.emit(EventType.RUN_FAILED, "Providers rate limited; nothing was guessed",
+                    retry_after_s=e.retry_after_s, models=e.models)
+            mins = f"{e.retry_after_s // 60}m {e.retry_after_s % 60}s" if e.retry_after_s >= 60 else f"{e.retry_after_s}s"
+            return self._respond(
+                rc, ResponseState.ERROR,
+                message=f"The model providers are rate limited right now, so I have not "
+                        f"answered rather than guess. Please try again in about {mins}.")
+        except PlanningFailed as e:
+            # Say which model failed and why, rather than a generic error. With
+            # a pinned model this is the honest outcome of honouring the pin.
+            rc.emit(EventType.RUN_FAILED, "No valid plan", model=e.model,
+                    attempts=e.attempts, error=str(e.last)[:200])
+            hint = (" Try Auto, or a different model from the dropdown."
+                    if pinned else " Please rephrase, or try again.")
+            return self._respond(
+                rc, ResponseState.ERROR,
+                message=f"{e.model.split('/')[-1]} could not turn that into a query I "
+                        f"can run safely, after {e.attempts} attempts.{hint}")
         except Exception as e:  # noqa: BLE001 -- last-resort guard
-            self._ev(rc, EventType.RUN_FAILED, "Run failed", error=str(e)[:300])
+            rc.emit(EventType.RUN_FAILED, "Run failed", error=str(e)[:300])
             return self._respond(rc, ResponseState.ERROR,
                                  message="Something went wrong while answering that. "
                                          "Please try again.")
 
-    # -- stages ------------------------------------------------------------
+    # -- the sequence ------------------------------------------------------
 
-    def _run_inner(self, question: str, state: ConversationState,
-                   rc: RunContext) -> AssistantResponse:
-        # 1. Plan (LLM call #1)
-        parsed, escalated = self._plan(question, state, rc)
+    def _run(self, question: str, state: ConversationState,
+             rc: RunContext, pinned: ModelSpec | None) -> AssistantResponse:
+        # 0. Judge: is this even about the records? No agent runs otherwise.
+        rel = relevance.assess(question, self.ctx, state.last_plan is not None)
+        if not rel.relevant:
+            rc.emit(EventType.TASK_CREATED, "Judge: not relevant, no agents spawned",
+                    dispatch={"planner": "skip", "composer": "skip", "anomaly": False,
+                              "reasons": [rel.reason]})
+            self._judge_record(rc, None)
+            return self._refuse(rc, "out_of_scope", rel.reason)
+
+        # 0b. Judge: which agents, which model, or a cache hit.
+        reg = self.planner.router.registry
+        primary = reg[Tier.PRIMARY].model if Tier.PRIMARY in reg else ""
+        alternate = reg[Tier.ALTERNATE].model if Tier.ALTERNATE in reg else None
+        d = self.judge.dispatch_planning(question, state.turns, state.last_plan is not None,
+                                         primary, alternate)
+        rc.emit(EventType.TASK_CREATED, f"Judge: planner={d.planner}, relevance: {rel.reason}",
+                dispatch=d.to_dict(), signals=rel.signals)
+
+        # 1. Plan (model call one), unless the judge found it cached.
+        cache_hit: str | None = None
+        if d.planner == "cache" and pinned is None:
+            parsed = self.judge.cached_plan(question, state.turns) or {}
+            cache_hit = "plan"
+            rc.emit(EventType.PLAN_VALIDATED, "Plan reused from cache (0 tokens)")
+        else:
+            parsed, _switched = self.planner.plan(question, state, rc, pinned=pinned,
+                                                  prefer=None if pinned else d.model)
+            if pinned is None:
+                self.judge.remember_plan(question, state.turns, parsed)
         scope = parsed.get("scope", "in_scope")
 
-        if scope == "out_of_scope":
-            self._ev(rc, EventType.SCOPE_CHECKED, "Out of scope", reason=parsed.get("reason"))
-            return self._respond(
-                rc, ResponseState.OUT_OF_SCOPE,
-                message=parsed.get("reason")
-                or "That is outside what I can answer from this financial dataset.",
-                capabilities=CAPABILITIES)
+        if scope in {"out_of_scope", "data_unavailable"}:
+            return self._refuse(rc, scope, parsed.get("reason"))
+        rc.emit(EventType.SCOPE_CHECKED, "In scope")
 
-        if scope == "data_unavailable":
-            self._ev(rc, EventType.SCOPE_CHECKED, "Data not available",
-                     reason=parsed.get("reason"))
-            return self._respond(
-                rc, ResponseState.DATA_UNAVAILABLE,
-                message=parsed.get("reason")
-                or "The dataset does not contain the information needed to answer that.",
-                capabilities=CAPABILITIES)
-
-        self._ev(rc, EventType.SCOPE_CHECKED, "In scope")
-
-        # 2. Validate the plan against the closed schema.
+        # 2. Validate against the closed schema.
         try:
-            plan = self._materialise_plan(parsed, state)
+            plan = self.planner.materialise(parsed, state)
         except ValidationError as e:
-            # Both the small and the escalated model failed to produce a valid
-            # plan. That is our failure, not an ambiguous question, so it is an
-            # ERROR rather than a clarification.
-            self._ev(rc, EventType.RUN_FAILED, "Plan failed validation",
-                     errors=e.errors()[:3])
+            rc.emit(EventType.RUN_FAILED, "Plan failed validation", errors=e.errors()[:3])
             return self._respond(
                 rc, ResponseState.ERROR,
                 message="I couldn't turn that into a query I can run safely. "
                         "Rather than guess at what you meant, I'd rather stop here.")
-        # A follow-up that yields a plan identical to the previous turn means
-        # coreference failed. Answering it would re-report the SAME figure under
-        # the new question's framing ("the month before" over last month's
-        # number), which is the most misleading thing this system could do.
+
+        # A follow-up that yields an identical plan means coreference failed.
+        # Answering would re-report the SAME figure under the new question's
+        # framing, which is the most misleading thing this system could do.
         if (state.last_plan is not None
                 and plan.fingerprint() == state.last_plan.fingerprint()):
-            self._ev(rc, EventType.CLARIFICATION_REQUIRED,
-                     "Follow-up did not change the query")
+            rc.emit(EventType.CLARIFICATION_REQUIRED, "Follow-up did not change the query")
             return self._respond(
                 rc, ResponseState.CLARIFICATION_REQUIRED,
                 clarification=Clarification(
@@ -162,41 +166,73 @@ class Pipeline:
                              "question. Could you state the period or vendor you mean?"))
 
         plan.user_question = question
-        self._ev(rc, EventType.INTENT_DETECTED, f"Intent: {plan.intent.value}",
-                 intent=plan.intent.value, metric=plan.metric.value,
-                 group_by=plan.group_by.value)
+        rc.emit(EventType.INTENT_DETECTED, f"Intent: {plan.intent.value}",
+                intent=plan.intent.value, metric=plan.metric.value,
+                group_by=plan.group_by.value)
 
-        # 3. Resolve the vendor deterministically. Ambiguity -> clarification.
+        # 3. Resolve the vendor deterministically. Ambiguity asks, never guesses.
         entity_match = entity_score = None
         if plan.vendor_name and not plan.vendor_id:
-            res = resolve_vendor(plan.vendor_name, self.ctx.vendors)
-            entity_match, entity_score = res.kind, res.score
-            if res.kind is MatchKind.AMBIGUOUS:
-                self._ev(rc, EventType.CLARIFICATION_REQUIRED,
-                         f"'{plan.vendor_name}' matches {len(res.candidates)} vendors")
-                return self._respond(
-                    rc, ResponseState.CLARIFICATION_REQUIRED,
-                    clarification=Clarification(
-                        question=f"There are {len(res.candidates)} vendors matching "
-                                 f"“{plan.vendor_name}”. Which one do you mean?",
-                        field="vendor_name",
-                        options=[ClarificationOption(label=c.record.vendor_name,
-                                                     value=c.record.vendor_id,
-                                                     hint=c.record.category)
-                                 for c in res.candidates]))
-            if res.kind is MatchKind.NOT_FOUND:
-                self._ev(rc, EventType.RUN_FAILED, f"No vendor named '{plan.vendor_name}'")
-                return self._respond(
-                    rc, ResponseState.DATA_UNAVAILABLE,
-                    message=f"There is no vendor matching “{plan.vendor_name}” "
-                            f"in this dataset.",
-                    capabilities=CAPABILITIES)
-            plan.vendor_id = res.best.vendor_id
-            plan.vendor_name = res.best.vendor_name
-            self._ev(rc, EventType.ENTITY_RESOLVED,
-                     f"Vendor: {res.best.vendor_name}",
-                     query=res.query, vendor_id=res.best.vendor_id,
-                     match=res.kind.value, score=res.score)
+            outcome = self._resolve_vendor(plan, rc)
+            if isinstance(outcome, AssistantResponse):
+                if outcome.state is ResponseState.CLARIFICATION_REQUIRED:
+                    state.pending_plan = plan
+                    state.pending_question = question
+                return outcome
+            entity_match, entity_score = outcome
+
+        return self._execute(question, state, rc, plan, entity_match, entity_score, pinned,
+                             dispatch=d, cache_hit=cache_hit)
+
+    def run_resolved(self, vendor_id: str, state: ConversationState,
+                     model_choice: str | None = None) -> AssistantResponse:
+        """Complete a plan parked on a vendor clarification.
+
+        The user picked an option, so the entity is now certain: pin it on the
+        parked plan and run the rest of the pipeline. No second planning call.
+        """
+        rc = RunContext(run_id=f"run_{uuid.uuid4().hex[:12]}",
+                        conversation_id=state.conversation_id, on_event=self.on_event)
+        plan, question = state.pending_plan, state.pending_question
+        if plan is None:
+            rc.emit(EventType.RUN_FAILED, "Nothing to clarify")
+            return self._respond(rc, ResponseState.ERROR,
+                                 message="There is no pending question to complete.")
+        vendor = next((v for v in self.ctx.vendors if v.vendor_id == vendor_id), None)
+        if vendor is None:
+            rc.emit(EventType.RUN_FAILED, "Unknown vendor id", vendor_id=vendor_id)
+            return self._respond(rc, ResponseState.ERROR,
+                                 message="That option does not match a vendor in the dataset.")
+        try:
+            pinned = self.planner.router.spec_for_choice(model_choice)
+        except ValueError as e:
+            return self._respond(rc, ResponseState.ERROR, message=str(e))
+
+        state.pending_plan = state.pending_question = None
+        plan = plan.model_copy(update={"vendor_id": vendor.vendor_id,
+                                       "vendor_name": vendor.vendor_name})
+        rc.emit(EventType.RUN_STARTED, "Completing your question", question=question,
+                turn=state.turns + 1, model=pinned.model if pinned else "auto")
+        rc.emit(EventType.SCOPE_CHECKED, "In scope")
+        rc.emit(EventType.INTENT_DETECTED, f"Intent: {plan.intent.value}",
+                intent=plan.intent.value, metric=plan.metric.value, group_by=plan.group_by.value)
+        rc.emit(EventType.ENTITY_RESOLVED, f"Vendor: {vendor.vendor_name}",
+                query=vendor.vendor_name, vendor_id=vendor.vendor_id, match="chosen", score=1.0)
+        try:
+            return self._execute(question or "", state, rc, plan, MatchKind.EXACT, 1.0, pinned,
+                                 dispatch=Dispatch("skip", "llm", False, None,
+                                                   ["clarification answered; planner not needed"]),
+                                 cache_hit=None)
+        except Exception as e:  # noqa: BLE001
+            rc.emit(EventType.RUN_FAILED, "Run failed", error=str(e)[:300])
+            return self._respond(rc, ResponseState.ERROR,
+                                 message="Something went wrong while answering that.")
+
+    def _execute(self, question: str, state: ConversationState, rc: RunContext,
+                 plan, entity_match, entity_score, pinned,
+                 dispatch: Dispatch, cache_hit: str | None) -> AssistantResponse:
+        """Everything after the entity is certain: dates, compile, query,
+        verify, evidence, compose."""
 
         # 4. Resolve dates against the DATASET, not today.
         was_relative = bool(plan.date_range and plan.date_range.relative)
@@ -209,51 +245,65 @@ class Pipeline:
             return self._respond(rc, ResponseState.ERROR, message=str(e))
 
         if plan.date_range:
-            self._ev(rc, EventType.DATES_RESOLVED,
-                     f"Period: {plan.date_range.resolved_label}",
-                     start=str(plan.date_range.resolved_start),
-                     end=str(plan.date_range.resolved_end),
-                     was_relative=was_relative)
+            rc.emit(EventType.DATES_RESOLVED, f"Period: {plan.date_range.resolved_label}",
+                    start=str(plan.date_range.resolved_start),
+                    end=str(plan.date_range.resolved_end), was_relative=was_relative)
+        rc.emit(EventType.PLAN_VALIDATED, "Query plan validated",
+                fingerprint=plan.fingerprint())
 
-        self._ev(rc, EventType.PLAN_VALIDATED, "Query plan validated",
-                 fingerprint=plan.fingerprint())
+        # 4b. Judge: an identical validated plan was answered recently.
+        hit = self.judge.cached_answer(plan.fingerprint()) if pinned is None else None
+        if hit:
+            rc.emit(EventType.TASK_CREATED, "Judge: answer reused from cache (0 tokens, no query)",
+                    dispatch={"planner": dispatch.planner, "composer": "cache", "anomaly": False})
+            rc.emit(EventType.ANSWER_GENERATED, "Answer ready (cached)")
+            state.last_plan = plan
+            state.last_period_label = plan.date_range.resolved_label if plan.date_range else None
+            state.turns += 1
+            rc.emit(EventType.RUN_COMPLETED, "Done")
+            resp = AssistantResponse(
+                run_id=rc.run_id, conversation_id=rc.conversation_id,
+                state=ResponseState.ANSWER, answer=hit["answer"],
+                evidence=EvidencePackage.model_validate(hit["evidence"]), plan=plan,
+                chart_hint=hit.get("chart_hint"),
+                follow_up_suggestions=suggestions.follow_ups(plan),
+                model_usage=rc.ledger.summary())
+            self._judge_record(rc, resp, cache_hit="answer")
+            return resp
 
-        # 5. Compile + execute. No LLM anywhere near this.
+        # 5. Compile and execute. No model anywhere near this.
         try:
             cq = compile_plan(plan)
         except CompilationError as e:
-            self._ev(rc, EventType.RUN_FAILED, "Could not compile query", error=str(e))
+            rc.emit(EventType.RUN_FAILED, "Could not compile query", error=str(e))
             return self._respond(rc, ResponseState.ERROR,
                                  message="I couldn't turn that into a safe query.")
 
-        self._ev(rc, EventType.TOOL_STARTED, "Querying financial records",
-                 kind=cq.kind)
+        rc.emit(EventType.TOOL_STARTED, "Querying financial records", kind=cq.kind)
         try:
             result = self.ch.query(cq.sql, cq.params)
         except QueryError as e:
-            self._ev(rc, EventType.RUN_FAILED, "Query failed", error=str(e)[:200])
+            rc.emit(EventType.RUN_FAILED, "Query failed", error=str(e)[:200])
             return self._respond(rc, ResponseState.ERROR,
                                  message="The financial database could not be queried. "
                                          "I won't guess at the figure.")
 
-        aggregate, rows = self._split_result(cq.kind, result.rows)
-        self._ev(rc, EventType.QUERY_EXECUTED,
-                 f"{result.rows and len(result.rows) or 0} rows returned",
-                 duration_ms=result.duration_ms, rows_read=result.rows_read)
+        aggregate, rows = split_result(cq.kind, result.rows)
+        rc.emit(EventType.QUERY_EXECUTED, f"{len(result.rows)} rows returned",
+                duration_ms=result.duration_ms, rows_read=result.rows_read)
 
-        # 6. Verify.
-        self._ev(rc, EventType.VERIFICATION_STARTED, "Verifying result")
+        # 6. Verify. Blocking failures veto the answer entirely.
+        rc.emit(EventType.VERIFICATION_STARTED, "Verifying result")
         vr = verif.verify(plan, rows, aggregate=aggregate,
                           dataset_min=self.ctx.calendar.min_date,
                           dataset_max=self.ctx.calendar.max_date)
-        self._ev(rc, EventType.VERIFICATION_COMPLETED,
-                 f"Verification: {vr.passed_count}/{vr.total_count} passed",
-                 passed=vr.passed,
-                 checks=[{"name": c.name, "passed": c.passed, "detail": c.detail}
-                         for c in vr.checks])
+        rc.emit(EventType.VERIFICATION_COMPLETED,
+                f"Verification: {vr.passed_count}/{vr.total_count} passed",
+                passed=vr.passed,
+                checks=[{"name": c.name, "passed": c.passed, "detail": c.detail}
+                        for c in vr.checks])
 
-        record_count = self._record_count(aggregate, rows)
-
+        count = record_count(aggregate, rows)
         if not vr.passed:
             failed = [c.name for c in vr.checks if not c.passed and c.severity == "blocking"]
             return self._respond(
@@ -262,303 +312,158 @@ class Pipeline:
                         f"({', '.join(failed)}). Rather than guess, I'd rather tell you.",
                 capabilities=CAPABILITIES)
 
-        if record_count == 0 and plan.metric is Metric.SUM:
+        if count == 0 and plan.metric is Metric.SUM:
             period = plan.date_range.resolved_label if plan.date_range else "the dataset"
             return self._respond(
                 rc, ResponseState.DATA_UNAVAILABLE,
                 message=f"There are no matching records for {period}, so there is no "
-                        f"figure to report.",
+                        "figure to report.",
                 capabilities=CAPABILITIES)
 
-        # 7. Evidence + confidence.
-        evidence = self._build_evidence(rc, plan, cq, result, aggregate, rows, vr)
-        confidence = conf.compute(
+        # 7. Evidence and confidence.
+        evidence = self.evidence.build(rc, plan, cq, result, aggregate, rows, vr)
+        evidence.confidence = conf.compute(
             plan, vr, entity_match=entity_match, entity_score=entity_score or 1.0,
-            record_count=record_count, was_relative_date=was_relative,
+            record_count=count, was_relative_date=was_relative,
             truncated=len(rows) >= plan.limit if rows else False)
-        evidence.confidence = confidence
-        self._ev(rc, EventType.CONFIDENCE_COMPUTED,
-                 f"Confidence: {confidence.band.value} ({confidence.score:.0%})",
-                 score=confidence.score, signals=confidence.signals)
+        rc.emit(EventType.CONFIDENCE_COMPUTED,
+                f"Confidence: {evidence.confidence.band.value} "
+                f"({evidence.confidence.score:.0%})",
+                score=evidence.confidence.score, signals=evidence.confidence.signals)
 
-        # 8. Compose (LLM call #2). Placeholders only.
-        answer = self._compose(question, evidence, rc, escalated=escalated)
-        self._ev(rc, EventType.ANSWER_GENERATED, "Answer ready")
+        # 8. Judge: template or model; and whether an anomaly agent is worth it.
+        d2 = self.judge.dispatch_answering(plan, evidence, dispatch)
+        rc.emit(EventType.TASK_CREATED,
+                f"Judge: composer={d2.composer}{', anomaly agent' if d2.anomaly else ''}",
+                dispatch=d2.to_dict())
+
+        answer = None
+        if d2.composer == "template":
+            t = comp_svc.template_answer(evidence, plan.intent.value)
+            answer = t.text if t else None
+        if answer is None:
+            answer = self.composer.compose(question, evidence, rc, pinned=pinned)
+
+        if d2.anomaly:
+            fact = evidence.fact_map().get("total")
+            if fact and plan.date_range and plan.date_range.resolved_start:
+                a = anomaly_agent.check(
+                    self.ch, "vendor_payouts" if plan.intent.value == "vendor_payouts" else "transactions",
+                    plan.vendor_id, plan.vendor_name or plan.vendor_id,
+                    plan.date_range.resolved_start, plan.date_range.resolved_end,
+                    float(fact.value), evidence.currency)
+                rc.emit(EventType.TOOL_COMPLETED,
+                        "Anomaly check: " + ("unusual" if a.flagged else "within normal range"),
+                        flagged=a.flagged, ratio=a.ratio, z=a.z, history_months=a.history_months)
+                if a.sentence:
+                    answer = f"{answer} {a.sentence}"
+                    evidence.verification.add("anomaly_callout", True, a.sentence, severity="warning")
+        rc.emit(EventType.ANSWER_GENERATED, "Answer ready")
 
         state.last_plan = plan
-        state.last_period_label = plan.date_range.resolved_label if plan.date_range else None
+        state.last_period_label = (plan.date_range.resolved_label
+                                   if plan.date_range else None)
         state.turns += 1
 
-        self._ev(rc, EventType.RUN_COMPLETED, "Done")
-        return AssistantResponse(
+        rc.emit(EventType.RUN_COMPLETED, "Done")
+        resp = AssistantResponse(
             run_id=rc.run_id, conversation_id=rc.conversation_id,
             state=ResponseState.ANSWER, answer=answer, evidence=evidence, plan=plan,
-            chart_hint=self._chart_hint(plan, rows),
-            follow_up_suggestions=self._suggestions(plan),
+            chart_hint=suggestions.chart_hint(plan, rows),
+            follow_up_suggestions=suggestions.follow_ups(plan),
             model_usage=rc.ledger.summary())
+        if pinned is None:
+            self.judge.remember_answer(plan.fingerprint(), {
+                "answer": answer, "evidence": evidence.model_dump(mode="json"),
+                "chart_hint": resp.chart_hint})
+        self._judge_record(rc, resp, cache_hit=cache_hit)
+        return resp
 
-    # -- LLM stages --------------------------------------------------------
-
-    def _plan(self, question: str, state: ConversationState,
-              rc: RunContext) -> tuple[dict[str, Any], bool]:
-        """Returns (parsed, escalated). Escalates once on a parse failure."""
-        is_followup = state.last_plan is not None
-        if is_followup:
-            system, user_t = prompts.load("plan_delta_v1")
-            system = prompts.fill(
-                system,
-                previous_plan=state.last_plan.model_dump_json(
-                    exclude_none=True, exclude={"user_question"}),
-                previous_period=state.last_period_label or "not specified")
-        else:
-            system, user_t = prompts.load("scope_and_plan_v1")
-            system = prompts.fill(
-                system,
-                dataset_min=self.ctx.calendar.min_date,
-                dataset_max=self.ctx.calendar.max_date,
-                categories=", ".join(self.ctx.categories),
-                intents=", ".join(i.value for i in Intent),
-                relatives=("last_month, this_month, month_before_last, last_quarter, "
-                           "this_quarter, last_year, this_year, last_7_days, "
-                           "last_30_days, last_90_days, last_6_months, last_12_months, "
-                           "all_time"))
-        user = prompts.fill(user_t, question=question)
-
-        last_error: Exception | None = None
-        for tier, escalated in ((Tier.SMALL, False), (Tier.ESCALATION, True)):
-            try:
-                raw = self.router.call(tier=tier, purpose="plan", system=system,
-                                       user=user, ledger=rc.ledger, json_mode=True,
-                                       max_tokens=1200)
-                parsed = extract_json(raw)
-
-                # Validate HERE, inside the retry loop. A plan that does not
-                # satisfy the schema is a planning failure, and planning
-                # failures are exactly what escalation exists for. Validating
-                # after the loop (as this once did) turned every malformed plan
-                # into a "please rephrase" shown to the user, which hid real
-                # model failures behind what looked like a clarification.
-                if parsed.get("scope", "in_scope") == "in_scope":
-                    self._materialise_plan(parsed, state)
-
-                if escalated:
-                    self._ev(rc, EventType.FALLBACK_COMPLETED,
-                             "Escalated to a larger model after a planning failure")
-                return parsed, escalated
-
-            except Exception as e:  # noqa: BLE001
-                last_error = e
-                if tier is Tier.SMALL:
-                    self._ev(rc, EventType.FALLBACK_STARTED,
-                             "Small model produced an unusable plan; escalating",
-                             error=str(e)[:160])
-                    continue
-                raise
-
-        raise last_error or RuntimeError("planning failed with no recorded error")
-
-    def _compose(self, question: str, evidence: EvidencePackage, rc: RunContext,
-                 *, escalated: bool) -> str:
-        allowed = comp.allowed_keys(evidence)
-        system_t, user_t = prompts.load("response_composer_v1")
-        descriptions = {
-            "shown_total": "the combined value of ONLY the groups listed in the "
-                           "table below, which was cut off by a row limit -- "
-                           "describe it as the top groups shown, never as a total",
-            "total": "the total value",
-            "count": "the number of matching records",
-            "rate": "the percentage",
-            "record_count": "how many records the figure is based on",
-            "top_value": "the largest single group's value",
-            "group_count": "how many groups are shown",
-        }
-        facts_desc = "\n".join(
-            f"- {{{{{f.key}}}}} = " +
-            descriptions.get(f.key, f"the {f.kind} value") +
-            (f" (over {f.record_count} records)" if f.record_count else "")
-            for f in evidence.facts)
-        system = prompts.fill(
-            system_t,
-            allowed_placeholders=", ".join("{{" + k + "}}" for k in allowed),
-            fact_descriptions=facts_desc,
-            question=question,
-            period_placeholder_note=evidence.resolved_period or "the whole dataset")
-
-        last_error = ""
-        for attempt in range(2):
-            tier = Tier.ESCALATION if attempt else Tier.SMALL
-            try:
-                draft = self.router.call(
-                    tier=tier, purpose=f"compose{'_retry' if attempt else ''}",
-                    system=system + (f"\n\nYour previous attempt was rejected: "
-                                     f"{last_error} Fix it." if attempt else ""),
-                    user=prompts.fill(user_t), ledger=rc.ledger, max_tokens=800)
-                return comp.render(draft, evidence).text
-            except comp.ComposeError as e:
-                last_error = str(e)
-                self._ev(rc, EventType.FALLBACK_STARTED,
-                         "Draft rejected by the grounding check", reason=last_error[:160])
-            except Exception as e:  # noqa: BLE001 -- provider failure
-                last_error = str(e)
-                break
-
-        # Both drafts rejected: a plain templated sentence built from verified
-        # values beats a fluent one we cannot vouch for.
-        self._ev(rc, EventType.FALLBACK_COMPLETED, "Used the deterministic answer template")
-        return comp.deterministic_fallback(evidence, question).text
+    def _judge_record(self, rc: RunContext, resp: AssistantResponse | None,
+                      cache_hit: str | None = None) -> None:
+        if resp is None:
+            return
+        try:
+            v = self.judge.record(resp, cache_hit)
+            rc.emit(EventType.TASK_COMPLETED, f"Judge: score {v.score:.2f}",
+                    verdict=v.to_dict())
+        except Exception:  # noqa: BLE001 -- scoring must never fail a run
+            pass
 
     # -- helpers -----------------------------------------------------------
 
-    def _materialise_plan(self, parsed: dict[str, Any],
-                          state: ConversationState) -> FinanceQueryPlan:
-        if "delta" in parsed and state.last_plan is not None:
-            delta = PlanDelta.model_validate(parsed.get("delta") or {})
-            delta.clear = parsed.get("clear", []) or []
-            return delta.apply_to(state.last_plan)
-        return FinanceQueryPlan.model_validate(parsed.get("plan") or parsed)
+    def _resolve_vendor(self, plan, rc: RunContext):
+        """Returns (match_kind, score), or a finished response when it cannot."""
+        res = resolve_vendor(plan.vendor_name, self.ctx.vendors)
 
-    @staticmethod
-    def _split_result(kind: str, rows: list[dict]) -> tuple[dict | None, list[dict]]:
-        if kind == "aggregate":
-            return (rows[0] if rows else {}), []
-        return None, rows
+        if res.kind is MatchKind.AMBIGUOUS:
+            rc.emit(EventType.CLARIFICATION_REQUIRED,
+                    f"'{plan.vendor_name}' matches {len(res.candidates)} vendors")
+            return self._respond(
+                rc, ResponseState.CLARIFICATION_REQUIRED,
+                clarification=Clarification(
+                    question=f"There are {len(res.candidates)} vendors matching "
+                             f"“{plan.vendor_name}”. Which one do you mean?",
+                    field="vendor_name",
+                    options=[ClarificationOption(label=c.record.vendor_name,
+                                                 value=c.record.vendor_id,
+                                                 hint=c.record.category)
+                             for c in res.candidates]))
 
-    @staticmethod
-    def _record_count(aggregate: dict | None, rows: list[dict]) -> int:
-        if aggregate and aggregate.get("record_count") is not None:
-            return int(aggregate["record_count"])
-        if rows and all("record_count" in r for r in rows):
-            return sum(int(r["record_count"]) for r in rows)
-        return len(rows)
+        if res.kind is MatchKind.NOT_FOUND:
+            rc.emit(EventType.RUN_FAILED, f"No vendor named '{plan.vendor_name}'")
+            near = [v.vendor_name for v in self.ctx.vendors][:6]
+            return self._respond(
+                rc, ResponseState.DATA_UNAVAILABLE,
+                message=f"There is no vendor matching “{plan.vendor_name}” in this "
+                        "dataset. Did you mean one of these?",
+                clarification=Clarification(
+                    question="Pick a vendor to ask the same question about:",
+                    field="vendor_name",
+                    options=[ClarificationOption(label=n, value=n) for n in near]),
+                capabilities=CAPABILITIES)
 
-    def _build_evidence(self, rc, plan, cq, result, aggregate, rows, vr) -> EvidencePackage:
-        currency = self.ctx.currency
-        if aggregate and aggregate.get("currency"):
-            currency = aggregate["currency"]
+        plan.vendor_id = res.best.vendor_id
+        plan.vendor_name = res.best.vendor_name
+        rc.emit(EventType.ENTITY_RESOLVED, f"Vendor: {res.best.vendor_name}",
+                query=res.query, vendor_id=res.best.vendor_id,
+                match=res.kind.value, score=res.score)
+        return res.kind, res.score
 
-        facts: list[ComputedFact] = []
-        record_count = self._record_count(aggregate, rows)
+    def _refuse(self, rc: RunContext, scope: str, reason: str | None) -> AssistantResponse:
+        """A refusal is a steer, not a dead end.
 
-        if aggregate:
-            value = float(aggregate.get("value") or 0)
-            if plan.intent is Intent.RECONCILIATION_RATE:
-                facts.append(ComputedFact(key="rate", value=value, kind="percent",
-                                          formatted=comp.format_percent(value),
-                                          record_count=record_count))
-                for k in ("matched", "unmatched"):
-                    if k in aggregate:
-                        facts.append(ComputedFact(
-                            key=k, value=int(aggregate[k]), kind="count",
-                            formatted=comp.format_count(aggregate[k])))
-            elif plan.metric is Metric.COUNT:
-                facts.append(ComputedFact(key="count", value=int(value), kind="count",
-                                          formatted=comp.format_count(value),
-                                          record_count=record_count))
-            else:
-                facts.append(ComputedFact(
-                    key="total", value=value, kind="money", currency=currency,
-                    formatted=comp.format_money(value, currency),
-                    sql_expression=f"{plan.metric.value}(amount)",
-                    record_count=record_count))
-        elif rows and cq.kind == "grouped":
-            total = sum(float(r.get("value") or 0) for r in rows)
-            # A grouped result cut off by the row limit is a SUBTOTAL of the
-            # groups shown, not the total. Naming it "total" would let the
-            # composer write "total spend was X" about a truncated figure --
-            # a correct-looking sentence stating a wrong number.
-            truncated = len(rows) >= plan.limit
-            facts.append(ComputedFact(
-                key="shown_total" if truncated else "total",
-                value=total, kind="money", currency=currency,
-                formatted=comp.format_money(total, currency),
-                record_count=record_count))
-            top = rows[0]
-            facts.append(ComputedFact(
-                key="top_value", value=float(top.get("value") or 0), kind="money",
-                currency=currency,
-                formatted=comp.format_money(float(top.get("value") or 0), currency)))
-            facts.append(ComputedFact(
-                key="group_count", value=len(rows), kind="count",
-                formatted=comp.format_count(len(rows))))
-        elif rows:
-            facts.append(ComputedFact(key="count", value=len(rows), kind="count",
-                                      formatted=comp.format_count(len(rows))))
-
-        facts.append(ComputedFact(key="record_count", value=record_count, kind="count",
-                                  formatted=comp.format_count(record_count)))
-
-        breakdown: list[BreakdownRow] = []
-        if cq.kind == "grouped" and cq.label_column:
-            total = sum(float(r.get("value") or 0) for r in rows) or 1.0
-            name_by_id = {v.vendor_id: v.vendor_name for v in self.ctx.vendors}
-            for r in rows:
-                label = str(r.get(cq.label_column))
-                breakdown.append(BreakdownRow(
-                    label=name_by_id.get(label, label),
-                    value=float(r.get("value") or 0),
-                    record_count=int(r.get("record_count") or 0),
-                    share_pct=round(100.0 * float(r.get("value") or 0) / total, 2)))
-
-        samples = [
-            SourceRecordRef(
-                table="transactions", record_id=str(r.get("transaction_id", "")),
-                txn_date=date.fromisoformat(r["txn_date"]) if r.get("txn_date") else None,
-                vendor_id=r.get("vendor_id"),
-                amount=float(r["amount"]) if r.get("amount") else None)
-            for r in rows[:25] if "transaction_id" in r
-        ]
-
-        return EvidencePackage(
-            evidence_id=f"ev_{uuid.uuid4().hex[:12]}", run_id=rc.run_id,
-            plan_fingerprint=plan.fingerprint(), facts=facts, breakdown=breakdown,
-            breakdown_columns=cq.columns, sample_records=samples,
-            total_record_count=record_count,
-            resolved_period=plan.date_range.resolved_label if plan.date_range else None,
-            resolved_start=plan.date_range.resolved_start if plan.date_range else None,
-            resolved_end=plan.date_range.resolved_end if plan.date_range else None,
-            currency=currency,
-            entities_resolved={k: v for k, v in {
-                "vendor_name": plan.vendor_name, "vendor_id": plan.vendor_id,
-                "category": plan.category}.items() if v},
-            sql=cq.sql, sql_params={k: str(v) for k, v in cq.params.items()},
-            query_duration_ms=result.duration_ms, verification=vr,
-            dataset_version=self.ctx.dataset_version)
-
-    @staticmethod
-    def _chart_hint(plan: FinanceQueryPlan, rows: list[dict]) -> str | None:
-        if not rows:
-            return None
-        if plan.group_by.value in {"day", "week", "month", "quarter", "year"}:
-            return "line"
-        if plan.group_by.value != "none":
-            return "bar"
-        return None
-
-    @staticmethod
-    def _suggestions(plan: FinanceQueryPlan) -> list[str]:
-        out = []
-        if plan.date_range:
-            out.append("What about the month before?")
-        if plan.group_by.value == "none":
-            out.append("Break that down by category")
-        if plan.vendor_id:
-            out.append("Is that unusual for this vendor?")
-        else:
-            out.append("Which vendors account for most of it?")
-        return out[:3]
-
-    def _ev(self, rc: RunContext, type_: EventType, label: str, **detail) -> None:
-        ev = rc.emit(type_, label, **detail)
-        if self.on_event:
-            self.on_event(ev)
+        The user-facing sentence is ours, fixed, and never the model's own
+        wording (the model's reason is kept in the event log for the pane).
+        Every refusal carries guided questions, so the chat keeps offering a
+        relevant next step until something actually runs.
+        """
+        guide = Clarification(
+            question="Ask about spend, payouts or reconciliation. For example:",
+            field="guided",
+            options=[ClarificationOption(label=q, value=q) for q in GUIDED_QUESTIONS])
+        if scope == "out_of_scope":
+            rc.emit(EventType.SCOPE_CHECKED, "Not relevant to this service",
+                    reason=(reason or "")[:200])
+            return self._respond(rc, ResponseState.OUT_OF_SCOPE,
+                                 message=OUT_OF_SCOPE_MESSAGE, clarification=guide,
+                                 capabilities=CAPABILITIES)
+        rc.emit(EventType.SCOPE_CHECKED, "Data not available", reason=(reason or "")[:200])
+        return self._respond(
+            rc, ResponseState.DATA_UNAVAILABLE,
+            message=(reason or "The dataset does not contain what that needs.")
+                    + " Here is what I can answer:",
+            clarification=guide, capabilities=CAPABILITIES)
 
     def _respond(self, rc: RunContext, state: ResponseState, *,
                  message: str | None = None,
                  clarification: Clarification | None = None,
                  capabilities: Iterable[str] = ()) -> AssistantResponse:
-        self._ev(rc, EventType.RUN_COMPLETED, f"Finished: {state.value}")
-        return AssistantResponse(
+        rc.emit(EventType.RUN_COMPLETED, f"Finished: {state.value}")
+        resp = AssistantResponse(
             run_id=rc.run_id, conversation_id=rc.conversation_id, state=state,
             message=message, clarification=clarification,
             supported_capabilities=list(capabilities),
             model_usage=rc.ledger.summary())
+        self._judge_record(rc, resp)
+        return resp

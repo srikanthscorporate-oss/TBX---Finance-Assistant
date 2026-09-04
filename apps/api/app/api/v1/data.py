@@ -86,8 +86,11 @@ async def export_csv(
     """
     _require_ready()
     date_range = None
-    if relative:
-        date_range = resolve(DateRange(relative=relative), app_state.ctx.calendar)  # type: ignore[arg-type]
+    try:
+        if relative:
+            date_range = resolve(DateRange(relative=relative), app_state.ctx.calendar)  # type: ignore[arg-type]
+    except Exception as e:  # noqa: BLE001 -- an unknown relative is a client error
+        raise HTTPException(400, f"unknown period: {relative}") from None
 
     try:
         plan = FinanceQueryPlan(

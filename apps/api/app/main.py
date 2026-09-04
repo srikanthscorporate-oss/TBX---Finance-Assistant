@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .api.v1 import admin, chat, data
+from .api.v1 import admin, chat, data, models
 from .config.settings import settings
 from .state import app_state, startup
 
@@ -64,14 +64,20 @@ async def rate_limit(request: Request, call_next):
     if request.url.path.startswith("/api/v1/chat"):
         client = request.headers.get("cf-connecting-ip") or (
             request.client.host if request.client else "unknown")
-        now = time.time()
-        window = _hits[client]
-        while window and now - window[0] > 60:
-            window.popleft()
-        if len(window) >= settings.rate_limit_per_minute:
+        # Redis-backed fixed window so the limit holds across replicas; the
+        # in-process deque is only the fallback when Redis is unavailable.
+        count = app_state.cache.incr("ratelimit", client, str(int(time.time() // 60)), ttl=70) \
+            if app_state.cache and app_state.cache.enabled else 0
+        if not count:
+            now = time.time()
+            window = _hits[client]
+            while window and now - window[0] > 60:
+                window.popleft()
+            window.append(now)
+            count = len(window)
+        if count > settings.rate_limit_per_minute:
             return JSONResponse(
                 {"detail": "Too many requests. Please slow down."}, status_code=429)
-        window.append(now)
 
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -92,6 +98,7 @@ async def record_usage(request: Request, call_next):
 app.include_router(chat.router)
 app.include_router(data.router)
 app.include_router(admin.router)
+app.include_router(models.router)
 
 
 @app.get("/health")

@@ -1,5 +1,5 @@
 import 'server-only';
-import type { EvalReport, Usage } from './types';
+import type { EvalReport, JudgeSummary, Usage } from './types';
 
 /**
  * Server-side fetch for the first paint.
@@ -26,3 +26,4 @@ async function get<T>(path: string): Promise<T | null> {
 
 export const getUsageServer = () => get<Usage>('/api/v1/admin/usage');
 export const getEvaluationsServer = () => get<EvalReport>('/api/v1/admin/evaluations');
+export const getJudgeServer = () => get<JudgeSummary>('/api/v1/admin/judge');

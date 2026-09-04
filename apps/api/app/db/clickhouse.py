@@ -32,12 +32,14 @@ class QueryResult:
 class ClickHouseClient:
     def __init__(self, host: str, port: int, user: str, password: str,
                  database: str = "tbx_finance", *, timeout: int = 10,
-                 max_result_rows: int = 50_000, secure: bool = False):
+                 max_result_rows: int = 50_000, secure: bool = False,
+                 max_rows_to_read: int = 100_000_000):
         scheme = "https" if secure else "http"
         self.base = f"{scheme}://{host}:{port}"
         self.user, self.password, self.database = user, password, database
         self.timeout = timeout
         self.max_result_rows = max_result_rows
+        self.max_rows_to_read = max_rows_to_read
 
     def query(self, sql: str, params: dict[str, Any] | None = None) -> QueryResult:
         """Run a read query. `params` are bound server-side, never interpolated."""
@@ -48,6 +50,10 @@ class ClickHouseClient:
             # enforces its own, which these cannot exceed.
             "max_execution_time": str(self.timeout),
             "max_result_rows": str(self.max_result_rows),
+            # Bound a runaway scan without rejecting a full pass over the 20M
+            # rows the prototype is tested at (granule reads can exceed the
+            # nominal count, so the ceiling sits well above it).
+            "max_rows_to_read": str(self.max_rows_to_read),
             "result_overflow_mode": "throw",
             "readonly": "1",
         }

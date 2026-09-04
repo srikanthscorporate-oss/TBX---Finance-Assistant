@@ -36,6 +36,9 @@ if (!fs.existsSync(reportPath)) fail('G5', 'no report written');
 const rep = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
 
 if (rep.turns !== turns) fail('G5', `report covers ${rep.turns} turns, golden set has ${turns}`);
+// Say the true thing first: a throttled run is a quota event, not a metric bug.
+if (rep.throttled)
+  fail('G5', `throttled run: ${rep.rate_limited_calls} rate-limited calls or turns; overall ${(rep.overall_accuracy * 100).toFixed(1)}% is a quota event, not a measurement. Re-run when quota has recovered.`);
 if (rep.transport_errors) fail('G5', `${rep.transport_errors} turns failed to reach the API`);
 for (const k of ['overall_accuracy', 'numeric_accuracy', 'grounding_rate',
                  'hallucination_free_rate', 'state_accuracy'])

@@ -20,3 +20,8 @@ evaluation/results/*.json
 *.log
 AGENTS.md
 CLAUDE.md
+
+# Scale-test data (gigabytes, regenerated on demand)
+data/scale/
+data/*.orig
+data/*.bak

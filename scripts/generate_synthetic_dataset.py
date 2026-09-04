@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import random
 from datetime import date, timedelta
 from pathlib import Path
@@ -85,18 +86,44 @@ def month_iter(start: date, end: date):
             y, m = y + 1, 1
 
 
-def generate(outdir: Path, start: date, end: date) -> dict[str, int]:
+TXN_FIELDS = ["transaction_id", "txn_date", "posted_at", "vendor_id", "account_code",
+              "category", "description", "amount", "currency", "direction", "status",
+              "payment_method", "reconciliation_status", "invoice_ref", "payout_id"]
+PAYOUT_FIELDS = ["payout_id", "payout_date", "vendor_id", "amount", "currency",
+                 "status", "method", "invoice_count", "reference"]
+RECON_FIELDS = ["recon_id", "transaction_id", "status", "matched_at",
+                "bank_reference", "variance_amount", "note"]
+
+
+def generate(outdir: Path, start: date, end: date, target_rows: int | None = None) -> dict[str, int]:
+    """Write the dataset, streaming rows to disk so 20M fits in constant memory.
+
+    `target_rows` scales transactions per vendor-month so the total lands near
+    the requested count, which is how the 20M-record test set is produced.
+    """
     rng = random.Random(SEED)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    transactions, payouts, recons = [], [], []
+    months = list(month_iter(start, end))
+    slots = len(months) * len(VENDORS)
+    # ceil, not round: a requested 20M must produce AT LEAST 20M so the
+    # scale claim is literally true, never 74 rows short of it.
+    per_slot = max(1, math.ceil(target_rows / slots)) if target_rows else None
+
+    txn_fh = (outdir / "transactions.csv").open("w", newline="")
+    pay_fh = (outdir / "vendor_payouts.csv").open("w", newline="")
+    rec_fh = (outdir / "reconciliation.csv").open("w", newline="")
+    txn_w = csv.DictWriter(txn_fh, fieldnames=TXN_FIELDS); txn_w.writeheader()
+    pay_w = csv.DictWriter(pay_fh, fieldnames=PAYOUT_FIELDS); pay_w.writeheader()
+    rec_w = csv.DictWriter(rec_fh, fieldnames=RECON_FIELDS); rec_w.writeheader()
+
     txn_n = payout_n = recon_n = 0
 
-    for year, month in month_iter(start, end):
+    for year, month in months:
         month_start = date(year, month, 1)
         for vid, vname, _legal, category, _country in VENDORS:
             scale = VENDOR_SCALE[vid]
-            n_txn = rng.randint(6, 22)
+            n_txn = per_slot if per_slot else rng.randint(6, 22)
             # Seasonal wobble so month-over-month comparisons are meaningful.
             wobble = rng.uniform(0.75, 1.3)
 
@@ -125,8 +152,8 @@ def generate(outdir: Path, start: date, end: date) -> dict[str, int]:
                     weights=[85, 7, 6, 2],
                 )[0]
 
-                tid = f"T{txn_n:07d}"
-                transactions.append({
+                tid = f"T{txn_n:09d}"
+                txn_w.writerow({
                     "transaction_id": tid,
                     "txn_date": txn_date.isoformat(),
                     "posted_at": f"{txn_date.isoformat()} {rng.randint(8,19):02d}:{rng.randint(0,59):02d}:00",
@@ -149,8 +176,8 @@ def generate(outdir: Path, start: date, end: date) -> dict[str, int]:
                     f"{(txn_date + timedelta(days=rng.randint(1, 9))).isoformat()} 10:00:00"
                     if recon_status == "matched" else ""
                 )
-                recons.append({
-                    "recon_id": f"R{recon_n:07d}",
+                rec_w.writerow({
+                    "recon_id": f"R{recon_n:09d}",
                     "transaction_id": tid,
                     "status": recon_status,
                     "matched_at": matched_at,
@@ -159,7 +186,7 @@ def generate(outdir: Path, start: date, end: date) -> dict[str, int]:
                     "note": "amount mismatch under review" if recon_status == "disputed" else "",
                 })
 
-            payouts.append({
+            pay_w.writerow({
                 "payout_id": payout_id,
                 "payout_date": month_start.replace(day=min(28, 25)).isoformat(),
                 "vendor_id": vid,
@@ -184,16 +211,13 @@ def generate(outdir: Path, start: date, end: date) -> dict[str, int]:
            [{"account_code": a[0], "account_name": a[1], "account_type": a[2],
              "parent_code": a[3], "is_active": "1"} for a in ACCOUNTS])
 
-    _write(outdir / "transactions.csv", list(transactions[0].keys()), transactions)
-    _write(outdir / "vendor_payouts.csv", list(payouts[0].keys()), payouts)
-    _write(outdir / "reconciliation.csv", list(recons[0].keys()), recons)
-
+    txn_fh.close(); pay_fh.close(); rec_fh.close()
     _write_data_dictionary(outdir / "data_dictionary.csv")
 
     return {
         "vendors": len(VENDORS), "accounts": len(ACCOUNTS),
-        "transactions": len(transactions), "vendor_payouts": len(payouts),
-        "reconciliation": len(recons),
+        "transactions": txn_n, "vendor_payouts": payout_n,
+        "reconciliation": recon_n,
     }
 
 
@@ -237,7 +261,10 @@ if __name__ == "__main__":
     ap.add_argument("--out", default="data/raw")
     ap.add_argument("--start", default="2025-01-01")
     ap.add_argument("--end", default="2026-08-31")
+    ap.add_argument("--rows", type=int, default=None,
+                    help="approximate transaction count, e.g. 20000000 for the scale test")
     args = ap.parse_args()
-    counts = generate(Path(args.out), date.fromisoformat(args.start), date.fromisoformat(args.end))
+    counts = generate(Path(args.out), date.fromisoformat(args.start),
+                      date.fromisoformat(args.end), target_rows=args.rows)
     for k, v in counts.items():
         print(f"{k:20} {v:>8,}")

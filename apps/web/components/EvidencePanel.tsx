@@ -72,7 +72,7 @@ export default function EvidencePanel({ evidence }: { evidence: Evidence }) {
             <p className="leading-5 text-muted">
               Values are bound by the database, never pasted into the statement.
             </p>
-            <pre className="overflow-x-auto rounded-sm border border-line-soft bg-raised p-2.5
+            <pre className="whitespace-pre-wrap break-all rounded-sm border border-line-soft bg-raised p-2.5
                             font-mono text-[11px] leading-5 text-ink-2">{evidence.sql}</pre>
             {Object.keys(evidence.sql_params).length > 0 && (
               <dl className="grid grid-cols-[minmax(0,auto)_1fr] gap-x-4 gap-y-1">
