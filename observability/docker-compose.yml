@@ -4,7 +4,6 @@ services:
   grafana:
     image: grafana/grafana:11.5.2
     restart: unless-stopped
-    ports: ["3000:3000"]
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
@@ -139,11 +138,25 @@ services:
     restart: unless-stopped
     depends_on:
       langfuse-worker: { condition: service_started }
-    ports: ["3001:3000"]
     environment:
       <<: *langfuse-env
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET}
       LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://minio:9000
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports: ["80:80"]
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on: [grafana, langfuse, minio]
+
+  cloudflared:
+    image: cloudflare/cloudflared:2025.2.1
+    profiles: [cloudflare]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on: [nginx]
 
 volumes:
   grafana-data:

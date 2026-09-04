@@ -3,7 +3,7 @@ set -eu
 
 stack_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 env_file="$stack_dir/.env"
-langfuse_url=${1:-http://localhost:3001}
+langfuse_url=${1:-http://localhost}
 
 if [ -e "$env_file" ]; then
   echo "Refusing to overwrite existing $env_file" >&2

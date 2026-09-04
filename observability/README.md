@@ -16,7 +16,7 @@ docker compose up -d
 docker compose ps
 ```
 
-Open Grafana at http://localhost:3000 and Langfuse at http://localhost:3001. Grafana's user is `admin`; its password is in `.env` under `GRAFANA_ADMIN_PASSWORD`. Create the first Langfuse user in the Langfuse UI.
+Open Langfuse at http://localhost and Grafana at http://grafana.localhost. Grafana's user is `admin`; its password is in `.env` under `GRAFANA_ADMIN_PASSWORD`. Create the first Langfuse user in the Langfuse UI.
 
 ## Application settings
 
@@ -28,6 +28,22 @@ OTLP HTTP:  http://otel-collector:4318
 ```
 
 All data persists in local named Docker volumes. `.env` contains generated secrets and must never be committed.
+
+## Cloudflare routing
+
+Nginx is the only public gateway. Configure Cloudflare Tunnel hostnames to forward to `http://nginx:80` and use these subdomains:
+
+- `langfuse.your-domain.com` -> Langfuse
+- `grafana.your-domain.com` -> Grafana
+- `minio.your-domain.com` -> MinIO console
+
+Set `LANGFUSE_NEXTAUTH_URL=https://langfuse.your-domain.com` in `.env`, add `CLOUDFLARE_TUNNEL_TOKEN`, then start the tunnel:
+
+```sh
+docker compose --profile cloudflare up -d
+```
+
+Do not proxy PostgreSQL, Redis, ClickHouse, Prometheus, Loki, Tempo, or OTLP publicly.
 
 ## Everyday commands
 
