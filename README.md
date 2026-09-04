@@ -11,7 +11,7 @@ records. When the data cannot support an answer, the assistant says so.
 Built for the TBX - BVP Tech Catalyst Hackathon.
 
 Measured over 68 turns of a 64-question golden set against
-live models: **no clean measurement is on disk.** The last run on 2026-09-05 was throttled by provider rate limits (63 of 68 turns refused before any model call), so its scores are a quota event, not the pipeline. The evaluation re-runs automatically once quota recovers. See [docs/model-choice.md](docs/model-choice.md).
+live models: **no clean measurement is on disk.** The last run on 2026-09-05 was throttled by provider rate limits (57 of 68 turns refused before any model call), so its scores are a quota event, not the pipeline. The evaluation re-runs automatically once quota recovers. See [docs/model-choice.md](docs/model-choice.md).
 
 ---
 

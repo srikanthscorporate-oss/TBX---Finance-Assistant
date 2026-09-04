@@ -94,6 +94,12 @@ class Verdict:
                 "model": self.model, "switched": self.switched, "notes": self.notes}
 
 
+def _has_key(model_id: str) -> bool:
+    from ..llm import catalog as _cat
+    entry = _cat.by_id(model_id)
+    return bool(entry and entry.available)
+
+
 class Judge:
     def __init__(self, cache: Cache, dataset_version: str):
         self.c = cache
@@ -228,6 +234,23 @@ class Judge:
             s += 0.1
         elif switched:
             notes.append("needed a second model")
+        # One plain sentence a person can read in a list.
+        if state == "answer":
+            reason = "verified answer" if verified else "answer with a failed check"
+        elif state == "error":
+            msg = (response.message or "").lower()
+            reason = ("providers rate limited, nothing guessed" if "rate limited" in msg
+                      else "could not build a valid query" if "query" in msg
+                      else "error")
+        elif state == "out_of_scope":
+            reason = "refused: not about the financial records"
+        elif state == "data_unavailable":
+            reason = "refused: the data cannot answer it"
+        elif state == "clarification_required":
+            reason = "asked the user to clarify"
+        else:
+            reason = state
+        notes.insert(0, reason)
         return Verdict(score=round(min(1.0, s), 3), grounded=ev is not None, verified=verified,
                        state=state, tokens=tokens, duration_ms=response.duration_ms or 0.0,
                        model=ok_models[-1].split("/")[-1] if ok_models else None,
@@ -252,6 +275,7 @@ class Judge:
             "cache": {**hits, "hit_rate": round((hits["plan"] + hits["answer"]) / total, 3)},
             "models": {
                 m.split("/")[-1]: {
+                    "available": _has_key(m),
                     "plan_validity": (lambda r: (round(r[0], 3) if r[0] is not None else None))(self.validity(m)),
                     "samples": self.validity(m)[1],
                     "breaker_open_s": self.breaker_ttl(m),

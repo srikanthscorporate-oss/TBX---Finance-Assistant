@@ -310,6 +310,11 @@ def main() -> int:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report, indent=2))
+    # A throttled run must never overwrite the last clean measurement. The
+    # dashboard shows the clean run as the measurement and the latest run as
+    # the latest attempt, so a bad hour cannot erase a good result.
+    if not report["throttled"] and report["transport_errors"] == 0 and out_path.name == "latest.json":
+        (out_path.parent / "last-clean.json").write_text(json.dumps(report, indent=2))
 
     print(f"\n{'=' * 72}")
     print(f"overall accuracy      {report['overall_accuracy']:.1%}  ({passed}/{total} turns)")

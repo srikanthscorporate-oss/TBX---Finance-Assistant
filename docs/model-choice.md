@@ -155,7 +155,7 @@ Run `python3 scripts/run_evaluation.py` against each configuration and fill in:
 
 | Model | Overall | Numeric | Grounding | Hallucination-free | Tokens/turn | p50 | p95 | Escalation |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **gpt-oss-20b** (primary, ALLaM 7B alternate) | 10.3% | 0.0% | 0% | 0% | 0 | 9 ms | 16 ms | 0.0% (throttled run) |
+| **gpt-oss-20b** (primary, ALLaM 7B alternate) | 14.7% | 85.7% | 100% | 71% | 55 | 9 ms | 724 ms | 0.0% (throttled run) |
 | ALLaM 2 7B only (strictly compliant) | | | | | | | | |
 | free fallback only | | | | | | | | |
 

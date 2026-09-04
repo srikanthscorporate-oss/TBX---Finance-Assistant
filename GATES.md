@@ -29,10 +29,10 @@ Scope: Take the verified grounding core to a running, deployable product - FastA
   EXPECT: GATE_G5_PASS
   EVIDENCE: pending
 
-- [ ] G6: Multi-turn follow-ups resolve coreference correctly over HTTP - "what about the month before?" shifts the period while preserving the vendor.
+- [x] G6: Multi-turn follow-ups resolve coreference correctly over HTTP - "what about the month before?" shifts the period while preserving the vendor.
   CHECK: node scripts/verify/multiturn.mjs
   EXPECT: GATE_G6_PASS
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=320d5f211f186f7671209fe8d300c1ba6b673449179fe221b971e6a114ddc885; exit=0; EXPECT=matched; output-sha256=922149607f31a7568628e2c41ab63167d5ae3814d156ef581c1dfae9480b10c6; output-bytes=218; shell=/bin/sh; cwd=/Users/shadow/Desktop/TBX hackathon/Financial Assistant; path=b9c24ccdd5b4/17 entries
 
 - [x] G7: CSV export of the underlying breakdown downloads and its rows sum to the answer's total.
   CHECK: node scripts/verify/export.mjs

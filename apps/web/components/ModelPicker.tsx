@@ -109,6 +109,19 @@ export default function ModelPicker({ value, onChange, disabled }: {
             </div>
           ))}
 
+          {(catalog?.over_ceiling?.length ?? 0) > 0 && (
+            <div>
+              <p className="sticky top-0 bg-surface px-3 pb-1 pt-2 text-[10.5px] uppercase tracking-wide text-muted">
+                OpenRouter free, not selectable
+                <span className="ml-1.5 normal-case tracking-normal">{catalog!.over_ceiling!.length} over the {catalog?.limit_b ?? 20}B ceiling or unsized</span>
+              </p>
+              {catalog!.over_ceiling!.map(m => (
+                <Option key={m.id} id={m.id} active={false} focused={false} onPick={() => {}} disabled
+                        title={m.label} sub={m.size_known ? `${m.size_label}, over the ceiling` : 'size not published, cannot be shown to comply'} />
+              ))}
+            </div>
+          )}
+
           {pendingSarvam.length > 0 && !groups.find(g => g.provider === 'sarvam') && (
             <div>
               <p className="sticky top-0 bg-surface px-3 pb-1 pt-2 text-[10.5px] uppercase tracking-wide text-muted">Sarvam AI</p>
@@ -120,7 +133,7 @@ export default function ModelPicker({ value, onChange, disabled }: {
           )}
 
           <p className="border-t border-line-soft px-3 pb-1.5 pt-2 text-[10.5px] leading-4 text-muted">
-            Only free models within the {catalog?.limit_b ?? 20}B ceiling are listed.
+            Every free model on the key is listed; only those within the {catalog?.limit_b ?? 20}B ceiling can be selected.
           </p>
         </div>
       )}

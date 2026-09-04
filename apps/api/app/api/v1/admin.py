@@ -97,7 +97,12 @@ async def evaluations() -> dict[str, Any]:
         return {"available": False,
                 "hint": "Run scripts/run_evaluation.py to measure accuracy, grounding "
                         "and efficiency against the golden question set."}
-    return {"available": True, **json.loads(report.read_text())}
+    latest = json.loads(report.read_text())
+    clean_path = report.parent / "last-clean.json"
+    clean = json.loads(clean_path.read_text()) if clean_path.exists() else None
+    if clean is None and not latest.get("throttled"):
+        clean = latest
+    return {"available": True, **latest, "last_clean": clean}
 
 
 @router.get("/health")

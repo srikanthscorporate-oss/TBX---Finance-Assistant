@@ -15,8 +15,11 @@ what could be enabled.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
+import urllib.request
 from dataclasses import dataclass, field
 
 log = logging.getLogger("tbx.catalog")
@@ -51,6 +54,8 @@ class CatalogModel:
     note: str = ""
     input_cost_per_m: float = 0.0
     output_cost_per_m: float = 0.0
+    size_known: bool = True       # False when the provider publishes no parameter count
+    discovered: bool = False      # came from a provider listing, not the static allowlist
 
     @property
     def available(self) -> bool:
@@ -73,6 +78,8 @@ class CatalogModel:
 
     @property
     def size_label(self) -> str:
+        if not self.size_known:
+            return "size not published"
         if self.active_params_b:
             return f"{self.params_b:g}B total, {self.active_params_b:g}B active"
         return f"{self.params_b:g}B"
@@ -84,7 +91,8 @@ class CatalogModel:
             "size_label": self.size_label, "free": self.free,
             "verified": self.verified, "available": self.available,
             "listed": self.listed, "list_when_keyed": self.list_when_keyed,
-            "over_limit": self.over_limit, "note": self.note,
+            "over_limit": self.over_limit, "refused": self.refused,
+            "size_known": self.size_known, "discovered": self.discovered, "note": self.note,
         }
 
 
@@ -144,8 +152,84 @@ EXCLUDED = {
 }
 
 
+# ---- OpenRouter discovery ---------------------------------------------------
+# Every free model on the key is listed, so the user can see the whole set.
+# Only those whose published size is within the ceiling are selectable; the
+# rest appear greyed with their size. A model with no published size cannot be
+# shown to comply and is treated as over the ceiling.
+
+_SIZE_RE = re.compile(r"(?<![a-z0-9])(\d+(?:\.\d+)?)b(?:-a(\d+(?:\.\d+)?)b)?(?![a-z0-9])", re.I)
+_discovered: list[CatalogModel] | None = None
+_discovered_at: float = 0.0
+DISCOVERY_TTL_S = 3600
+
+
+def _parse_size(model_id: str, name: str) -> tuple[float | None, float | None]:
+    for text in (model_id, name):
+        m = _SIZE_RE.search(text.replace("_", "-"))
+        if m:
+            return float(m.group(1)), (float(m.group(2)) if m.group(2) else None)
+    return None, None
+
+
+def discover_openrouter_free(force: bool = False) -> list[CatalogModel]:
+    """Free models on the OpenRouter key, refreshed hourly. Failure is silent:
+    the static allowlist still works without it."""
+    global _discovered, _discovered_at
+    import time
+    key = os.getenv("OPENROUTER_API_KEY")
+    if not key:
+        return []
+    if _discovered is not None and not force and time.time() - _discovered_at < DISCOVERY_TTL_S:
+        return _discovered
+    try:
+        req = urllib.request.Request("https://openrouter.ai/api/v1/models",
+                                     headers={"Authorization": f"Bearer {key}"})
+        data = json.loads(urllib.request.urlopen(req, timeout=10).read())
+    except Exception as e:  # noqa: BLE001
+        log.warning("openrouter discovery failed: %s", e)
+        return _discovered or []
+    static_ids = {m.id for m in CATALOG}
+    out: list[CatalogModel] = []
+    for m in data.get("data", []):
+        pr = m.get("pricing") or {}
+        try:
+            free = float(pr.get("prompt") or 0) == 0 and float(pr.get("completion") or 0) == 0
+        except ValueError:
+            free = False
+        if not free:
+            continue
+        mid = f"openrouter/{m['id']}"
+        if mid in static_ids or mid in EXCLUDED:
+            continue
+        total, active = _parse_size(m["id"], m.get("name") or "")
+        arch = m.get("architecture") or {}
+        outputs = arch.get("output_modalities") or []
+        if (outputs and "text" not in outputs) or any(
+                k in m["id"] for k in ("lyria", "content-safety", "guard", "embed", "tts", "whisper")) \
+                or m["id"] == "openrouter/free":
+            continue    # generators, classifiers and router aliases are not planners
+        known = total is not None
+        out.append(CatalogModel(
+            # OpenRouter names read "Vendor: Model Name"; keep the model part.
+            id=mid, label=((m.get("name") or m["id"]).split(":", 1)[-1].strip() or m["id"])[:40],
+            provider="openrouter",
+            params_b=total if known else PARAM_LIMIT_B * 10, active_params_b=active,
+            api_key_env="OPENROUTER_API_KEY", supports_json_mode=False, free=True,
+            verified=False, size_known=known, discovered=True,
+            note=("published size" if known else "size not published; cannot be shown to comply")))
+    _discovered, _discovered_at = out, time.time()
+    log.info("openrouter discovery: %d free models, %d within the ceiling",
+             len(out), sum(1 for m in out if not m.refused))
+    return out
+
+
+def all_models() -> list[CatalogModel]:
+    return CATALOG + discover_openrouter_free()
+
+
 def by_id(model_id: str) -> CatalogModel | None:
-    return next((m for m in CATALOG if m.id == model_id), None)
+    return next((m for m in all_models() if m.id == model_id), None)
 
 
 def available() -> list[CatalogModel]:

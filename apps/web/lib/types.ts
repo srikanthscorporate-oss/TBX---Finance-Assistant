@@ -120,6 +120,7 @@ export interface EvalReport {
   hallucination_free_rate?: number;
   rate_limited_calls?: number;
   throttled?: boolean;
+  last_clean?: EvalReport | null;
   efficiency?: {
     avg_llm_calls_per_turn: number;
     avg_tokens_per_turn: number;
@@ -135,13 +136,15 @@ export interface CatalogModel {
   id: string; label: string; provider: string;
   params_b: number; active_params_b: number | null; size_label: string;
   free: boolean; verified: boolean; available: boolean; listed: boolean;
-  over_limit: boolean; note: string;
+  over_limit: boolean; refused?: boolean; size_known?: boolean; discovered?: boolean;
+  note: string;
 }
 
 export interface ModelCatalog {
   limit_b: number;
   auto: { primary: string | null; alternate: string | null; policy: string };
   models: CatalogModel[];
+  over_ceiling?: CatalogModel[];
   unlisted: { id: string; label: string; reason: string }[];
   excluded: { id: string; reason: string }[];
 }
@@ -151,7 +154,7 @@ export interface JudgeSummary {
   runs_scored: number;
   avg_score: number | null;
   cache: { plan: number; answer: number; miss: number; hit_rate: number };
-  models: Record<string, { plan_validity: number | null; samples: number; breaker_open_s: number; trips_last_hour: number }>;
+  models: Record<string, { plan_validity: number | null; samples: number; breaker_open_s: number; trips_last_hour: number; quality_open?: boolean; available?: boolean }>;
   recent: { score: number; state: string; tokens: number; duration_ms: number; model: string | null;
             switched: boolean; notes: string[]; cache_hit: string | null; run_id: string }[];
 }

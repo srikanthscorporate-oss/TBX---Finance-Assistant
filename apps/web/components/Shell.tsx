@@ -17,13 +17,13 @@ export default function Shell({ children, meta }: {
   return (
     <div className="min-h-[100dvh]">
       <header className="sticky top-0 z-20 border-b border-line bg-bg/85 backdrop-blur">
-        <div className="mx-auto flex h-[60px] max-w-6xl items-center gap-4 px-4">
-          <Link href="/" className="flex items-baseline gap-2">
+        <div className="mx-auto flex h-[60px] w-full max-w-[1400px] items-center gap-6 px-4">
+          <Link href="/" className="flex shrink-0 items-center gap-2 leading-none">
             <span className="text-[14px] font-semibold tracking-tight">StrawHat</span>
             <span className="hidden text-[12px] text-muted sm:inline">Finance Assistant</span>
           </Link>
 
-          <nav className="ml-2 flex items-center gap-0.5">
+          <nav className="flex items-center gap-0.5" aria-label="Primary">
             {NAV.map(({ href, label, Icon }) => {
               const active = pathname === href;
               return (
@@ -38,7 +38,7 @@ export default function Shell({ children, meta }: {
             })}
           </nav>
 
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex shrink-0 items-center gap-3">
             {meta}
             <ThemeToggle />
           </div>

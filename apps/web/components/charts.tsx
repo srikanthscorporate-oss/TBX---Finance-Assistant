@@ -400,7 +400,7 @@ export function ChartFrame({ title, hint, children, actions }: {
 }) {
   return (
     <section className="overflow-hidden rounded border border-line bg-surface shadow-[inset_0_1px_0_var(--line-soft)]">
-      <header className="flex items-start gap-3 px-4 py-3">
+      <header className="flex min-h-[44px] items-center gap-3 border-b border-line-soft px-4 py-2">
         <div className="min-w-0">
           <h3 className="text-[13px] font-semibold tracking-tight">{title}</h3>
           {hint && <p className="mt-0.5 text-[11.5px] leading-4 text-muted">{hint}</p>}

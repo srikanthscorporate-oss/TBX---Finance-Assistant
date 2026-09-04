@@ -107,7 +107,6 @@ export default function Observability({ initialUsage, initialEvals, initialJudge
 
   const noRuns = !usage || usage.runs === 0;
   const recent = usage?.recent ?? [];
-  const eff = evals?.efficiency;
   const split = usage?.time_split_ms;
 
   return (
@@ -159,63 +158,86 @@ export default function Observability({ initialUsage, initialEvals, initialJudge
       )}
 
       {/* 3. Evaluation --------------------------------------------------- */}
-      {evals?.available ? (
-        <>
-          {evals.throttled && (
-            <div className="flex items-start gap-2.5 rounded border border-critical/40 bg-critical/[.06] px-3.5 py-3">
-              <Warning size={15} weight="fill" aria-hidden className="mt-[2px] shrink-0 text-critical" />
-              <p className="text-[12px] leading-5 text-ink-2">
-                This run was throttled: {evals.rate_limited_calls} model calls hit a provider rate
-                limit, so the scores below understate the pipeline. Re-run when quota has recovered.
-              </p>
-            </div>
-          )}
-          {evals.planner === 'stub' && (
-            <div className="flex items-start gap-2.5 rounded border border-warning/40 bg-warning/[.07] px-3.5 py-3">
-              <Warning size={15} weight="fill" aria-hidden className="mt-[2px] shrink-0 text-warning" />
-              <p className="text-[12px] leading-5 text-ink-2">
-                These scores came from the offline stub planner. They measure the deterministic
-                pipeline, not natural-language accuracy.
-              </p>
-            </div>
-          )}
-          <div className="grid gap-4 lg:grid-cols-[1fr_1.4fr]">
-            <Panel>
-              <PanelHead title="Golden set" meta={`${evals.questions} questions, ${evals.turns} turns`}
-                actions={<StatusPill kind={(evals.grounding_rate ?? 0) >= 1 ? 'good' : 'warning'}>Grounding {pct(evals.grounding_rate ?? 0, 0)}</StatusPill>} />
-              <div className="grid grid-cols-1 gap-2 p-2 sm:grid-cols-3">
-                <RadialGauge value={evals.overall_accuracy ?? 0} label="overall" tone="status" size={150} />
-                <RadialGauge value={evals.numeric_accuracy ?? 0} label="numeric" size={150} />
-                <RadialGauge value={evals.hallucination_free_rate ?? 0} label="hallucination free" tone="status" size={150} />
-              </div>
-              <ul className="divide-y divide-line-soft border-t border-line">
-                {[['Verification pass rate', evals.verification_pass_rate ?? 0, 'blocking checks veto an answer'],
-                  ['Hallucination free', evals.hallucination_free_rate ?? 0, 'no unverified figures'],
-                  ['Numeric accuracy', evals.numeric_accuracy ?? 0, 'against independent computation'],
-                  ['Vendor resolution', evals.vendor_resolution_accuracy ?? 0, 'correct entity chosen']].map(([label, v, hint]) => (
-                  <li key={String(label)} className="flex items-center gap-3 px-3.5 py-2.5">
-                    {(v as number) >= 1 ? <CheckCircle size={15} weight="fill" aria-hidden className="shrink-0 text-good" />
-                                        : <Warning size={15} weight="fill" aria-hidden className="shrink-0 text-warning" />}
-                    <div className="min-w-0"><p className="text-[12.5px]">{label as string}</p><p className="text-[11px] text-muted">{hint as string}</p></div>
-                    <p className="num ml-auto font-mono text-[13px]">{pct(v as number, 0)}</p>
-                  </li>))}
-              </ul>
-            </Panel>
-            <ChartFrame title="Accuracy by question category" hint="One measure across categories: colour carries magnitude only.">
-              <BarSeries horizontal height={330} format={(n: number) => `${Math.round(n * 100)}%`}
-                data={Object.entries(evals.by_category ?? {}).sort((a, b) => b[1].accuracy - a[1].accuracy)
-                  .map(([k, v]) => ({ label: k.replace(/_/g, ' '), value: v.accuracy }))} />
-              {eff && (
-                <div className="mt-2 grid grid-cols-3 gap-2 border-t border-line-soft px-2 pt-3 text-center">
-                  {[['Tokens per turn', compactNumber(eff.avg_tokens_per_turn)], ['Switch rate', pct(eff.escalation_rate, 1)],
-                    ['p95 latency', ms(eff.latency_p95_ms)]].map(([k, v]) => (
-                    <div key={k}><p className="num font-mono text-[15px]">{v}</p><p className="text-[10.5px] text-muted">{k}</p></div>))}
+      {evals?.available ? (() => {
+        // The measurement is the last CLEAN run. A throttled attempt is shown
+        // as an attempt, never as the pipeline's accuracy.
+        const clean = evals.last_clean && !evals.last_clean.throttled ? evals.last_clean : (evals.throttled ? null : evals);
+        const eff = clean?.efficiency;
+        return (
+          <>
+            {evals.throttled && (
+              <div className="flex items-start gap-2.5 rounded border border-warning/40 bg-warning/[.07] px-3.5 py-3">
+                <Warning size={15} weight="fill" aria-hidden className="mt-[2px] shrink-0 text-warning" />
+                <div className="text-[12px] leading-5 text-ink-2">
+                  <p className="font-medium text-ink">Latest attempt ({evals.generated_at?.replace('T', ' ').slice(0, 16)}) was throttled and is not a measurement.</p>
+                  <p>{evals.rate_limited_calls} of {evals.turns} turns were refused before any model call because every
+                    provider was rate limited. Nothing was guessed. {clean ? 'The measurement below is the last clean run.' : 'No clean run is on disk yet; the evaluation re-runs automatically when quota recovers.'}</p>
                 </div>
-              )}
-            </ChartFrame>
-          </div>
-        </>
-      ) : (
+              </div>
+            )}
+            {clean?.planner === 'stub' && (
+              <div className="flex items-start gap-2.5 rounded border border-warning/40 bg-warning/[.07] px-3.5 py-3">
+                <Warning size={15} weight="fill" aria-hidden className="mt-[2px] shrink-0 text-warning" />
+                <p className="text-[12px] leading-5 text-ink-2">These scores came from the offline stub planner: they measure the deterministic pipeline, not natural-language accuracy.</p>
+              </div>
+            )}
+            <div className="grid gap-4 lg:grid-cols-[1fr_1.4fr]">
+              <Panel>
+                <PanelHead title="Golden set"
+                  meta={clean ? `${clean.questions} questions, ${clean.turns} turns, measured ${clean.generated_at?.slice(0, 10)}` : `${evals.questions} questions, ${evals.turns} turns`}
+                  actions={clean
+                    ? <StatusPill kind={(clean.grounding_rate ?? 0) >= 1 ? 'good' : 'warning'}>Grounding {pct(clean.grounding_rate ?? 0, 0)}</StatusPill>
+                    : <StatusPill kind="info">Not measured yet</StatusPill>} />
+                {clean ? (
+                  <div className="grid grid-cols-1 gap-2 p-2 sm:grid-cols-3">
+                    <RadialGauge value={clean.overall_accuracy ?? 0} label="overall" tone="status" size={150} />
+                    <RadialGauge value={clean.numeric_accuracy ?? 0} label="numeric" size={150} />
+                    <RadialGauge value={clean.hallucination_free_rate ?? 0} label="hallucination free" tone="status" size={150} />
+                  </div>
+                ) : (
+                  <Empty icon={<ShieldCheck size={24} />} title="No clean measurement on disk"
+                         body="The only evaluation so far ran while every model was rate limited. It re-runs automatically when quota recovers; nothing here is a score." />
+                )}
+                <ul className="divide-y divide-line-soft border-t border-line">
+                  {[['Verification pass rate', 'verification_pass_rate', 'blocking checks veto an answer'],
+                    ['Hallucination free', 'hallucination_free_rate', 'no unverified figures'],
+                    ['Numeric accuracy', 'numeric_accuracy', 'against independent computation'],
+                    ['Vendor resolution', 'vendor_resolution_accuracy', 'correct entity chosen']].map(([label, key, hint]) => {
+                    const v = clean ? ((clean as unknown) as Record<string, number>)[key as string] : null;
+                    return (
+                      <li key={label as string} className="flex items-center gap-3 px-3.5 py-2.5">
+                        {v == null ? <span aria-hidden className="h-[15px] w-[15px] shrink-0 rounded-pill border border-line" />
+                          : v >= 1 ? <CheckCircle size={15} weight="fill" aria-hidden className="shrink-0 text-good" />
+                          : <Warning size={15} weight="fill" aria-hidden className="shrink-0 text-warning" />}
+                        <div className="min-w-0"><p className="text-[12.5px]">{label as string}</p><p className="text-[11px] text-muted">{hint as string}</p></div>
+                        <p className="num ml-auto font-mono text-[13px]">{v == null ? 'not measured' : pct(v, 0)}</p>
+                      </li>);
+                  })}
+                </ul>
+              </Panel>
+              <ChartFrame title="Accuracy by question category"
+                hint={clean ? 'One measure across categories: colour carries magnitude only.' : 'Appears after the first clean run.'}>
+                {clean ? (
+                  <>
+                    <BarSeries horizontal height={330} format={(n: number) => `${Math.round(n * 100)}%`}
+                      data={Object.entries(clean.by_category ?? {}).sort((a, b) => b[1].accuracy - a[1].accuracy)
+                        .map(([k, v]) => ({ label: k.replace(/_/g, ' '), value: v.accuracy }))} />
+                    {eff && (
+                      <div className="mt-2 grid grid-cols-3 gap-2 border-t border-line-soft px-2 pt-3 text-center">
+                        {[['Tokens per turn', compactNumber(eff.avg_tokens_per_turn)], ['Switch rate', pct(eff.escalation_rate, 1)],
+                          ['p95 latency', ms(eff.latency_p95_ms)]].map(([k, v]) => (
+                          <div key={k}><p className="num font-mono text-[15px]">{v}</p><p className="text-[10.5px] text-muted">{k}</p></div>))}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <Empty icon={<ChartBar size={24} />} title="Not measured yet" body="Category accuracy is drawn from the last clean evaluation run." />
+                )}
+              </ChartFrame>
+            </div>
+          </>
+        );
+      })() : (
         <Panel><PanelHead title="Golden set" />
           <Empty icon={<ShieldCheck size={24} />} title="No evaluation report yet"
                  body={evals?.hint ?? 'Run scripts/run_evaluation.py to measure accuracy and efficiency.'} /></Panel>
@@ -245,25 +267,45 @@ export default function Observability({ initialUsage, initialEvals, initialJudge
                   </div>
                   <span className="num w-14 text-right font-mono text-[12px]">{h.plan_validity == null ? 'n/a' : pct(h.plan_validity, 0)}</span>
                   <span className="w-16 text-[10.5px] text-muted">{h.samples} plans</span>
-                  {h.breaker_open_s > 0
-                    ? <StatusPill kind="warning">paused {h.breaker_open_s}s</StatusPill>
+                  {h.available === false
+                    ? <StatusPill kind="info">no key</StatusPill>
+                    : h.breaker_open_s > 0
+                    ? <StatusPill kind="warning">rate limited, {h.breaker_open_s}s</StatusPill>
+                    : h.quality_open
+                    ? <StatusPill kind="critical">paused: low validity</StatusPill>
                     : <StatusPill kind="good">live</StatusPill>}
                 </li>
               ))}
             </ul>
-            {judge.recent.length > 0 && (
-              <div className="mt-2 border-t border-line-soft px-2 pt-2">
-                <p className="mb-1 text-[11px] text-muted">Recent verdicts</p>
-                <div className="flex flex-wrap gap-1" aria-label="recent verdict scores">
-                  {judge.recent.slice(0, 40).map(r => (
-                    <span key={r.run_id} title={`${r.state}${r.cache_hit ? `, ${r.cache_hit} cached` : ''}${r.notes.length ? `: ${r.notes.join('; ')}` : ''}`}
-                      className="h-5 w-3 rounded-[2px]"
-                      style={{ background: r.score >= 0.85 ? 'var(--good)' : r.score >= 0.6 ? 'var(--warning)' : 'var(--critical)',
-                               opacity: r.cache_hit ? 0.55 : 1 }} />
-                  ))}
+            {judge.recent.length > 0 && (() => {
+              const counts = judge.recent.reduce<Record<string, number>>((a, r) => { a[r.state] = (a[r.state] ?? 0) + 1; return a; }, {});
+              const tone = (sc: number) => sc >= 0.85 ? 'var(--good)' : sc >= 0.6 ? 'var(--warning)' : 'var(--critical)';
+              return (
+                <div className="mt-2 border-t border-line-soft px-2 pt-3">
+                  <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <p className="text-[11px] uppercase tracking-wide text-muted">Recent verdicts</p>
+                    {Object.entries(counts).map(([k, n]) => (
+                      <span key={k} className="text-[11.5px] text-ink-2">{n} {STATE_LABEL[k]?.toLowerCase() ?? k}</span>))}
+                    <span className="ml-auto flex items-center gap-3 text-[10.5px] text-muted">
+                      <span className="flex items-center gap-1"><span aria-hidden className="h-2 w-2 rounded-[2px]" style={{ background: 'var(--good)' }} />verified answer</span>
+                      <span className="flex items-center gap-1"><span aria-hidden className="h-2 w-2 rounded-[2px]" style={{ background: 'var(--warning)' }} />correct refusal</span>
+                      <span className="flex items-center gap-1"><span aria-hidden className="h-2 w-2 rounded-[2px]" style={{ background: 'var(--critical)' }} />error</span>
+                    </span>
+                  </div>
+                  <ul className="divide-y divide-line-soft">
+                    {judge.recent.slice(0, 8).map(r => (
+                      <li key={r.run_id} className="flex items-center gap-3 py-1.5 text-[12px]">
+                        <span aria-hidden className="h-3 w-1.5 shrink-0 rounded-[2px]" style={{ background: tone(r.score) }} />
+                        <span className="w-[118px] shrink-0 text-ink">{STATE_LABEL[r.state] ?? r.state}</span>
+                        <span className="min-w-0 flex-1 truncate text-ink-2" title={r.notes.join('; ')}>{r.notes[0] ?? ''}{r.cache_hit ? ` (${r.cache_hit} from cache)` : ''}</span>
+                        <span className="num hidden w-24 shrink-0 font-mono text-[11px] text-muted sm:block">{r.model ?? 'no model'}</span>
+                        <span className="num w-16 shrink-0 text-right font-mono text-[11px] text-muted">{r.tokens ? `${r.tokens.toLocaleString()} tok` : '0 tok'}</span>
+                        <span className="num w-14 shrink-0 text-right font-mono text-[11px] text-muted">{ms(r.duration_ms)}</span>
+                      </li>))}
+                  </ul>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </ChartFrame>
         </div>
       )}

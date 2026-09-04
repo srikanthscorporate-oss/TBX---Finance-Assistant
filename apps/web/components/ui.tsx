@@ -14,10 +14,12 @@ export function PanelHead({ title, meta, actions }: {
   title: string; meta?: ReactNode; actions?: ReactNode;
 }) {
   return (
-    <header className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line px-3.5 py-2.5">
-      <h2 className="text-[13px] font-medium tracking-tight">{title}</h2>
-      {meta && <div className="text-[12px] text-muted">{meta}</div>}
-      {actions && <div className="ml-auto flex items-center gap-1.5">{actions}</div>}
+    <header className="flex min-h-[44px] items-center gap-3 border-b border-line px-4 py-2">
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
+        <h2 className="text-[13px] font-semibold tracking-tight">{title}</h2>
+        {meta && <div className="text-[12px] text-muted">{meta}</div>}
+      </div>
+      {actions && <div className="ml-auto flex shrink-0 items-center gap-1.5">{actions}</div>}
     </header>
   );
 }
