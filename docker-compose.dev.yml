@@ -1,0 +1,15 @@
+services:
+  frontend:
+    container_name: strawhat-frontend-dev
+
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+
+    environment:
+      NODE_ENV: development
+
+    ports:
+      - "3000:3000"
