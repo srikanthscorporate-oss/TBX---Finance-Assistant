@@ -1,0 +1,22 @@
+.env
+.env.*
+!.env.example
+
+# Local credential scratch files. Never commit.
+keys.md
+*.keys
+secrets.*
+__init__/
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+.next/
+dist/
+data/raw/*.csv
+data/processed/
+evaluation/results/*.json
+.DS_Store
+*.log
+AGENTS.md
+CLAUDE.md

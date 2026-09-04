@@ -1,0 +1,156 @@
+"""Deterministic entity resolution.
+
+Vendor names are resolved by lookup and string similarity in Python -- never by
+a LIKE clause built from model output, and never by "take the best match and
+hope". Ambiguity is a first-class outcome that becomes CLARIFICATION_REQUIRED.
+"""
+from __future__ import annotations
+
+import unicodedata
+from dataclasses import dataclass
+from difflib import SequenceMatcher
+from enum import Enum
+
+
+class MatchKind(str, Enum):
+    EXACT = "exact"
+    UNIQUE_FUZZY = "unique_fuzzy"
+    AMBIGUOUS = "ambiguous"
+    NOT_FOUND = "not_found"
+
+
+# A single candidate must clear this to be usable at all.
+MIN_ACCEPT = 0.72
+# If the runner-up is this close to the leader, we refuse to choose.
+AMBIGUITY_MARGIN = 0.08
+
+
+@dataclass(frozen=True)
+class VendorRecord:
+    vendor_id: str
+    vendor_name: str
+    legal_name: str = ""
+    category: str = ""
+    status: str = "active"
+
+
+@dataclass
+class Candidate:
+    record: VendorRecord
+    score: float
+
+
+@dataclass
+class Resolution:
+    kind: MatchKind
+    query: str
+    candidates: list[Candidate]
+
+    @property
+    def best(self) -> VendorRecord | None:
+        return self.candidates[0].record if self.candidates else None
+
+    @property
+    def score(self) -> float:
+        return self.candidates[0].score if self.candidates else 0.0
+
+    @property
+    def is_usable(self) -> bool:
+        return self.kind in {MatchKind.EXACT, MatchKind.UNIQUE_FUZZY}
+
+
+def normalize(s: str) -> str:
+    """Casefold, strip accents, drop corporate suffixes and punctuation.
+
+    'Acme Technologies Pvt. Ltd.' and 'acme technologies' must collide, or every
+    lookup against legal names fails.
+    """
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.casefold()
+    for token in (" private limited", " pvt ltd", " pvt. ltd.", " pvt limited",
+                  " limited", " ltd", " llp", " inc", " corp", " corporation",
+                  " co", " gmbh", " bv", " sa", " plc", " llc"):
+        if s.endswith(token):
+            s = s[: -len(token)]
+    return " ".join(ch for ch in "".join(
+        c if c.isalnum() or c.isspace() else " " for c in s
+    ).split())
+
+
+def _token_score(q_token: str, t_token: str) -> float:
+    """How well one query token matches one target token."""
+    if q_token == t_token:
+        return 1.0
+    if t_token.startswith(q_token) and len(q_token) >= 3:
+        return 0.95          # "tech" -> "technologies"
+    return SequenceMatcher(None, q_token, t_token).ratio()
+
+
+def _alignment(query: str, target: str) -> float:
+    """Mean best-match score of each query token against the target's tokens.
+
+    This is what lets "acme tech" find Acme Technologies and "nrthwind" survive
+    a typo, while still scoring "acme" identically against both Acme vendors so
+    the ambiguity check can refuse to choose between them.
+    """
+    q_tokens, t_tokens = query.split(), target.split()
+    if not q_tokens or not t_tokens:
+        return 0.0
+    return sum(max(_token_score(q, t) for t in t_tokens) for q in q_tokens) / len(q_tokens)
+
+
+def _similarity(query: str, target: str) -> float:
+    if query == target:
+        return 1.0
+    ratio = SequenceMatcher(None, query, target).ratio()
+    q_tokens, t_tokens = set(query.split()), set(target.split())
+    overlap = (len(q_tokens & t_tokens) / len(q_tokens)) * 0.85 if q_tokens else 0.0
+    # A full prefix match ("acme" -> "acme technologies") scores high enough to
+    # be a candidate but never high enough to win outright when a sibling vendor
+    # shares the prefix -- the AMBIGUITY_MARGIN check settles those.
+    prefix = 0.9 if target.startswith(query + " ") else 0.0
+    return max(ratio, overlap, prefix, _alignment(query, target))
+
+
+def resolve_vendor(query: str, vendors: list[VendorRecord]) -> Resolution:
+    q = normalize(query)
+    if not q:
+        return Resolution(MatchKind.NOT_FOUND, query, [])
+
+    scored: list[Candidate] = []
+    for v in vendors:
+        score = max(
+            _similarity(q, normalize(v.vendor_name)),
+            _similarity(q, normalize(v.legal_name)) * 0.98 if v.legal_name else 0.0,
+        )
+        if score >= MIN_ACCEPT:
+            scored.append(Candidate(record=v, score=round(score, 4)))
+
+    scored.sort(key=lambda c: (-c.score, c.record.vendor_name))
+
+    if not scored:
+        return Resolution(MatchKind.NOT_FOUND, query, [])
+
+    # An exact normalized hit on exactly one vendor wins outright.
+    exact = [c for c in scored if normalize(c.record.vendor_name) == q]
+    if len(exact) == 1:
+        return Resolution(MatchKind.EXACT, query, exact)
+    if len(exact) > 1:
+        return Resolution(MatchKind.AMBIGUOUS, query, exact)
+
+    if len(scored) == 1:
+        return Resolution(MatchKind.UNIQUE_FUZZY, query, scored)
+
+    # Several plausible vendors: refuse to guess if the top two are close.
+    if scored[0].score - scored[1].score < AMBIGUITY_MARGIN:
+        close = [c for c in scored if scored[0].score - c.score < AMBIGUITY_MARGIN]
+        return Resolution(MatchKind.AMBIGUOUS, query, close[:8])
+
+    return Resolution(MatchKind.UNIQUE_FUZZY, query, scored[:1])
+
+
+def resolve_category(query: str, categories: list[str]) -> Resolution:
+    """Same policy, applied to spend categories."""
+    fake = [VendorRecord(vendor_id=c, vendor_name=c) for c in categories]
+    return resolve_vendor(query, fake)

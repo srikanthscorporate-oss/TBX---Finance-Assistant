@@ -1,0 +1,37 @@
+[project]
+name = "tbx-api"
+version = "1.0.0"
+description = "StrawHat Finance Assistant API. Grounded answers over financial records."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.10",
+    "python-multipart>=0.0.19",
+    "litellm>=1.55",
+    "langfuse>=2.57",
+    "redis>=5.2",
+    "openpyxl>=3.1",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.3",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+
+[tool.uv]
+package = false
