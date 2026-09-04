@@ -27,6 +27,7 @@ umask 077
   printf 'MINIO_ROOT_USER=minioadmin\n'
   printf 'MINIO_ROOT_PASSWORD=%s\n' "$(secret 32)"
   printf 'LANGFUSE_NEXTAUTH_URL=%s\n' "$langfuse_url"
+  printf 'NGINX_PORT=80\n'
   printf 'LANGFUSE_SALT=%s\n' "$(secret 32)"
   printf 'LANGFUSE_ENCRYPTION_KEY=%s\n' "$(secret 32)"
   printf 'LANGFUSE_NEXTAUTH_SECRET=%s\n' "$(secret 32)"
