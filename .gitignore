@@ -25,3 +25,7 @@ CLAUDE.md
 data/scale/
 data/*.orig
 data/*.bak
+
+# TypeScript incremental build state
+apps/web/tsconfig.tsbuildinfo
+*.tsbuildinfo
