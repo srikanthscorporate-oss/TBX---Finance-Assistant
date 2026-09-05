@@ -11,8 +11,12 @@ Only Nginx publishes ports on the host: HTTP (`80`) redirects to HTTPS (`443`). 
 | `langfuse.your-domain.com` | Langfuse |
 | `grafana.your-domain.com` | Grafana |
 | `minio.your-domain.com` | MinIO Console |
+| `tbx-web.your-domain.com` | TBX web application (opt-in) |
+| `tbx-api.your-domain.com` | TBX API (opt-in) |
 
 Do not expose PostgreSQL, Redis, ClickHouse, Prometheus, Loki, Tempo, or the OTLP Collector to the public internet.
+
+`tbx-web` and `tbx-api` are declared under the optional `tbx` Compose profile and use the pinned AMD64-compatible `v1` Docker Hub tags. They remain inactive until their required application configuration is added. When ready, enable them with `docker compose --profile tbx up -d`.
 
 ## Run it locally
 
