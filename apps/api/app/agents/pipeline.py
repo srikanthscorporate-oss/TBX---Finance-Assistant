@@ -356,6 +356,17 @@ class Pipeline:
                         "Anomaly check: " + ("unusual" if a.flagged else "within normal range"),
                         flagged=a.flagged, ratio=a.ratio, z=a.z, history_months=a.history_months)
                 if a.sentence:
+                    # Every figure in the sentence becomes a fact, so the callout is as
+                    # traceable as the answer it accompanies and the hallucination
+                    # detector can verify it rather than flag it.
+                    from ..contracts.evidence import ComputedFact as _CF
+                    evidence.facts.append(_CF(key="anomaly_ratio", value=a.ratio or 0.0, kind="ratio",
+                                              formatted=f"{a.ratio:.1f}x" if a.ratio else "n/a"))
+                    evidence.facts.append(_CF(key="anomaly_baseline", value=a.baseline or 0.0, kind="money",
+                                              currency=evidence.currency,
+                                              formatted=comp_svc.format_money(a.baseline or 0.0, evidence.currency)))
+                    evidence.facts.append(_CF(key="anomaly_history_months", value=a.history_months, kind="count",
+                                              formatted=str(a.history_months)))
                     answer = f"{answer} {a.sentence}"
                     evidence.verification.add("anomaly_callout", True, a.sentence, severity="warning")
         rc.emit(EventType.ANSWER_GENERATED, "Answer ready")

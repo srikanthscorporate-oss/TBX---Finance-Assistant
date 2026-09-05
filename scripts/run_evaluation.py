@@ -48,6 +48,27 @@ def post(api: str, path: str, body: dict, timeout: int = 60) -> dict:
         return json.loads(r.read().decode())
 
 
+_RETRY_IN = re.compile(r"try again in about (?:(\d+)m )?(\d+)s")
+
+
+def refused_for_seconds(res: dict) -> float:
+    """Seconds the API asked us to wait when it refused a turn as rate limited.
+
+    A single 429 opens the model's circuit breaker for the provider's stated
+    wait, and every turn during that window is refused in milliseconds. A
+    measurement that counts those refusals as failures measures the breaker,
+    not the assistant, so the runner waits the stated time and retries.
+    Returns 0 when the turn was not a rate-limit refusal.
+    """
+    msg = res.get("message") or ""
+    if "rate limited" not in msg.lower():
+        return 0.0
+    m = _RETRY_IN.search(msg)
+    if not m:
+        return 30.0
+    return int(m.group(1) or 0) * 60 + int(m.group(2))
+
+
 class Independent:
     """Expected values computed straight from the CSVs."""
 
@@ -164,6 +185,10 @@ def main() -> int:
     ap.add_argument("--api", default=os.getenv("TBX_API", "http://127.0.0.1:8010"))
     ap.add_argument("--out", default=str(RESULTS / "latest.json"))
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--rate-limit-retries", type=int, default=3,
+                    help="retry a rate-limit refused turn this many times, waiting the provider's stated interval")
+    ap.add_argument("--pace-s", type=float, default=float(os.getenv("EVAL_PACE_S", "0")),
+                    help="seconds to sleep after each turn, to stay under a per-minute token cap")
     args = ap.parse_args()
 
     questions = json.loads(GOLDEN.read_text())
@@ -192,6 +217,19 @@ def main() -> int:
             try:
                 res = post(args.api, "/api/v1/chat",
                            {"message": turn["question"], "conversation_id": cid})
+                # Honour the breaker: wait what the provider asked, then retry
+                # this turn. Only a refusal that outlives the retries counts.
+                for _ in range(args.rate_limit_retries):
+                    wait = refused_for_seconds(res)
+                    if not wait:
+                        break
+                    print(f"  rate limited, waiting {wait:.0f}s before retrying {turn.get('id', item['id'])}")
+                    time.sleep(min(wait, 300) + 1)
+                    started = time.perf_counter()
+                    res = post(args.api, "/api/v1/chat",
+                               {"message": turn["question"], "conversation_id": cid})
+                if args.pace_s:
+                    time.sleep(args.pace_s)
             except (urllib.error.URLError, TimeoutError) as e:
                 errors += 1
                 results.append({"id": turn.get("id", item["id"]), "error": str(e)})

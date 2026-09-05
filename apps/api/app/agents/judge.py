@@ -28,7 +28,7 @@ PLAN_TTL = 24 * 3600
 ANSWER_TTL = 3600
 # Bumped when cache semantics change, so stale entries are orphaned rather
 # than served. v2: refusals are no longer cached (see remember_plan).
-CACHE_NS = "v2"
+CACHE_NS = "v3"
 WINDOW_TTL = 3600           # rolling hour for per-model validity counters
 MIN_SAMPLE = 6              # do not steer on fewer observations than this
 STEER_MARGIN = 0.25         # switch preference only on a clear gap
