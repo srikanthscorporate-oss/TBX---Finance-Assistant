@@ -42,21 +42,6 @@ services:
     ports: ["127.0.0.1:9090:9090"]
     volumes: ["./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro", "prometheus-data:/prometheus"]
 
-  postgres:
-    image: postgres:16.8-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: app
-      POSTGRES_USER: app
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes: ["postgres-data:/var/lib/postgresql/data"]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U app -d app"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks: [default, data]
-
   redis:
     image: redis:7.4.2-alpine
     restart: unless-stopped
@@ -69,6 +54,24 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks: [default, data]
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-tbx}
+      MYSQL_USER: ${MYSQL_USER:-tbx}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "${MYSQL_HOST_BIND:-0.0.0.0}:${MYSQL_HOST_PORT:-3306}:3306"
+    volumes: ["mysql-data:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     networks: [default, data]
 
   clickhouse:
@@ -103,50 +106,6 @@ services:
       timeout: 5s
       retries: 20
 
-  langfuse-worker:
-    image: docker.langfuse.com/langfuse/langfuse-worker:4
-    restart: unless-stopped
-    depends_on:
-      postgres: { condition: service_healthy }
-      redis: { condition: service_healthy }
-      clickhouse: { condition: service_healthy }
-      minio: { condition: service_healthy }
-    environment: &langfuse-env
-      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL}
-      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/app
-      SALT: ${LANGFUSE_SALT}
-      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY}
-      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
-      CLICKHOUSE_URL: http://clickhouse:8123
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
-      CLICKHOUSE_CLUSTER_ENABLED: "false"
-      REDIS_HOST: redis
-      REDIS_PORT: "6379"
-      REDIS_AUTH: ${REDIS_PASSWORD}
-      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
-      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
-      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
-      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
-      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
-      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
-      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
-      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
-      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
-      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
-      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
-      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
-
-  langfuse:
-    image: docker.langfuse.com/langfuse/langfuse:4
-    restart: unless-stopped
-    depends_on:
-      langfuse-worker: { condition: service_started }
-    environment:
-      <<: *langfuse-env
-      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET}
-      LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://minio:9000
-
   api:
     image: srikanthsdocker/tbx-api:v1
     restart: unless-stopped
@@ -170,7 +129,6 @@ services:
     networks: [default, app, data, observability]
     depends_on:
       clickhouse: { condition: service_healthy }
-      postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
@@ -214,7 +172,7 @@ services:
       # Let\'s Encrypt material lives on the host; it is never committed.
       - ./nginx/certs:/etc/nginx/certs:ro
       - ./${NGINX_ACCESS_POLICY:-nginx/local-allowlist.conf}:/etc/nginx/conf.d/access-policy.conf:ro
-    depends_on: [grafana, langfuse, minio]
+    depends_on: [grafana, minio]
     networks: [default, app]
 
   cloudflared:
@@ -229,12 +187,12 @@ volumes:
   loki-data:
   tempo-data:
   prometheus-data:
-  postgres-data:
   redis-data:
   otel-data:
   clickhouse-data:
   clickhouse-logs:
   minio-data:
+  mysql-data:
 
 networks:
   app:
