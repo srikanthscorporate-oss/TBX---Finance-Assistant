@@ -33,6 +33,7 @@ services:
     ports: ["127.0.0.1:4317:4317", "127.0.0.1:4318:4318", "127.0.0.1:8889:8889"]
     volumes: ["./otel-collector/config.yml:/etc/otelcol-contrib/config.yml:ro", "otel-data:/var/lib/otelcol"]
     depends_on: [loki, tempo]
+    networks: [default, observability]
 
   prometheus:
     image: prom/prometheus:v3.2.1
@@ -54,6 +55,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks: [default, data]
 
   redis:
     image: redis:7.4.2-alpine
@@ -67,6 +69,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks: [default, data]
 
   clickhouse:
     image: clickhouse/clickhouse-server:25.12
@@ -82,6 +85,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    networks: [default, data]
 
   minio:
     image: cgr.dev/chainguard/minio:latest
@@ -143,16 +147,61 @@ services:
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET}
       LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://minio:9000
 
-  # Enable after adding the TBX application configuration.
-  tbx-web:
-    image: srikanthsdocker/tbx-web:v1
-    profiles: [tbx]
-    restart: unless-stopped
-
-  tbx-api:
+  api:
     image: srikanthsdocker/tbx-api:v1
-    profiles: [tbx]
     restart: unless-stopped
+    env_file: [.env]
+    environment:
+      TBX_ROLE: api
+      TBX_ENV: production
+      TBX_DOMAIN: tbx-api.strawhatpirates-hackathon.tech
+      TBX_EVAL_REPORT: /srv/evaluation/results/latest.json
+      CH_HOST: clickhouse
+      CH_PORT: "8123"
+      CH_DB: tbx_finance
+      CH_AGENT_USER: ${CLICKHOUSE_USER}
+      CH_AGENT_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      ALLOWED_ORIGINS: https://tbx-web.strawhatpirates-hackathon.tech
+    volumes:
+      - ./evaluation/results:/srv/evaluation/results:ro
+    ports:
+      - "127.0.0.1:18000:8000"
+    networks: [default, app, data, observability]
+    depends_on:
+      clickhouse: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    image: srikanthsdocker/tbx-api:v1
+    # v1 does not package app.worker; do not start this service until a
+    # worker-capable image is published.
+    profiles: [tbx-worker]
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    env_file: [.env]
+    environment:
+      TBX_ROLE: worker
+    networks: [default, app, data, observability]
+    depends_on:
+      redis: { condition: service_healthy }
+
+  web:
+    image: srikanthsdocker/tbx-web:v1
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE: ""
+      INTERNAL_API_BASE: http://api:8000
+    networks: [app]
 
   nginx:
     image: nginx:1.27-alpine
@@ -166,6 +215,7 @@ services:
       - ./nginx/certs:/etc/nginx/certs:ro
       - ./${NGINX_ACCESS_POLICY:-nginx/local-allowlist.conf}:/etc/nginx/conf.d/access-policy.conf:ro
     depends_on: [grafana, langfuse, minio]
+    networks: [default, app]
 
   cloudflared:
     image: cloudflare/cloudflared:2025.2.1
@@ -185,3 +235,8 @@ volumes:
   clickhouse-data:
   clickhouse-logs:
   minio-data:
+
+networks:
+  app:
+  data:
+  observability:

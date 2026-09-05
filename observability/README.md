@@ -16,7 +16,9 @@ Only Nginx publishes ports on the host: HTTP (`80`) redirects to HTTPS (`443`). 
 
 Do not expose PostgreSQL, Redis, ClickHouse, Prometheus, Loki, Tempo, or the OTLP Collector to the public internet.
 
-`tbx-web` and `tbx-api` are declared under the optional `tbx` Compose profile and use the pinned AMD64-compatible `v1` Docker Hub tags. They remain inactive until their required application configuration is added. When ready, enable them with `docker compose --profile tbx up -d`.
+TBX uses the pinned AMD64-compatible `v1` Docker Hub tags: `web` serves on container port 3000 and `api` on 8000. The API diagnostic port is bound only to `127.0.0.1:18000`; public traffic is routed exclusively through Nginx. The current API `v1` image does not include `app.worker`, so the worker is held behind the `tbx-worker` profile until a worker-capable image is published.
+
+Before the API reports healthy, provision and populate the ClickHouse `tbx_finance` schema. The API requires `tbx_finance.transactions`, `tbx_finance.vendors`, and `tbx_finance.dataset_versions`; it intentionally returns HTTP 503 until the financial dataset is loaded. Run the project’s dataset migration/loader with the ClickHouse credentials configured for this host—do not create placeholder financial data in production.
 
 ## Run it locally
 
