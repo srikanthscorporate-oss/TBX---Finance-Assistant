@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 720" width="100%" style="font-family:-apple-system,Helvetica,Arial,sans-serif;">
+  <defs>
+    <style>
+      .c{fill:#0b3d5c;} .ct{fill:#fff;font-size:15px;font-weight:700;}
+      .b{fill:#e8eef4;stroke:#0b3d5c;stroke-width:1.5;} .bt{fill:#0b3d5c;font-size:12px;font-weight:700;}
+      .l{fill:#fff;stroke:#8aa0b4;stroke-width:1;} .lt{fill:#1a1a1a;font-size:10px;}
+      .e{stroke:#8aa0b4;stroke-width:1.5;fill:none;}
+    </style>
+  </defs>
+<path class="e" d="M400 340 C 320 300, 300 230, 230 200"/>
+<path class="e" d="M200 180 L120 82 M200 180 L120 110 M200 180 L120 138 M200 180 L120 166 M200 214 L120 226 M200 214 L120 254 M200 214 L120 282"/>
+<path class="e" d="M600 340 C 680 300, 700 230, 770 200"/>
+<path class="e" d="M800 180 L885 82 M800 180 L885 110 M800 180 L885 138 M800 180 L885 166 M800 214 L885 226 M800 214 L885 254 M800 214 L885 282"/>
+<path class="e" d="M380 360 L 290 400"/>
+<path class="e" d="M200 418 L120 430 M200 418 L120 458 M200 418 L120 486 M200 418 L120 514 M200 418 L120 542 M200 418 L120 570"/>
+<path class="e" d="M620 360 L 710 400"/>
+<path class="e" d="M800 418 L885 430 M800 418 L885 458 M800 418 L885 486 M800 418 L885 514 M800 418 L885 542 M800 418 L885 570"/>
+<path class="e" d="M440 400 C 400 470, 380 520, 330 560"/>
+<path class="e" d="M330 594 L330 604"/>
+<path class="e" d="M560 400 C 600 470, 620 520, 670 560"/>
+<path class="e" d="M670 594 L670 604"/>
+<path class="e" d="M500 402 L500 470"/>
+  <!-- centre -->
+  <ellipse class="c" cx="500" cy="360" rx="120" ry="42"/>
+  <text class="ct" x="500" y="356" text-anchor="middle">StrawHat Finance</text>
+  <text class="ct" x="500" y="374" text-anchor="middle">Assistant</text>
+
+  <!-- branch: Grounding core (top-left) -->
+  <rect class="b" x="110" y="180" width="180" height="34" rx="8"/><text class="bt" x="200" y="202" text-anchor="middle">Grounding core</text>
+  <rect class="l" x="20" y="60" width="200" height="22" rx="5"/><text class="lt" x="120" y="75" text-anchor="middle">Typed plan (Pydantic, closed enums)</text>
+  <rect class="l" x="20" y="88" width="200" height="22" rx="5"/><text class="lt" x="120" y="103" text-anchor="middle">Vendor resolver (asks on ambiguity)</text>
+  <rect class="l" x="20" y="116" width="200" height="22" rx="5"/><text class="lt" x="120" y="131" text-anchor="middle">Date resolver (dataset anchored)</text>
+  <rect class="l" x="20" y="144" width="200" height="22" rx="5"/><text class="lt" x="120" y="159" text-anchor="middle">SQL compiler (allowlist + params)</text>
+  <rect class="l" x="20" y="226" width="200" height="22" rx="5"/><text class="lt" x="120" y="241" text-anchor="middle">Verification (blocking vetoes)</text>
+  <rect class="l" x="20" y="254" width="200" height="22" rx="5"/><text class="lt" x="120" y="269" text-anchor="middle">Confidence (data signals)</text>
+  <rect class="l" x="20" y="282" width="200" height="22" rx="5"/><text class="lt" x="120" y="297" text-anchor="middle">Evidence package (SQL, rows)</text>
+
+  <!-- branch: LLM (top-right) -->
+  <rect class="b" x="710" y="180" width="180" height="34" rx="8"/><text class="bt" x="800" y="202" text-anchor="middle">Two model calls</text>
+  <rect class="l" x="780" y="60" width="210" height="22" rx="5"/><text class="lt" x="885" y="75" text-anchor="middle">Call 1: Planner -> JSON plan, no SQL</text>
+  <rect class="l" x="780" y="88" width="210" height="22" rx="5"/><text class="lt" x="885" y="103" text-anchor="middle">Follow-ups: PlanDelta (changed fields)</text>
+  <rect class="l" x="780" y="116" width="210" height="22" rx="5"/><text class="lt" x="885" y="131" text-anchor="middle">Call 2: Composer -> {{placeholders}}</text>
+  <rect class="l" x="780" y="144" width="210" height="22" rx="5"/><text class="lt" x="885" y="159" text-anchor="middle">Digit scan rejects literal numbers</text>
+  <rect class="l" x="780" y="226" width="210" height="22" rx="5"/><text class="lt" x="885" y="241" text-anchor="middle">Retry same model with reason</text>
+  <rect class="l" x="780" y="254" width="210" height="22" rx="5"/><text class="lt" x="885" y="269" text-anchor="middle">Then a different compliant model</text>
+  <rect class="l" x="780" y="282" width="210" height="22" rx="5"/><text class="lt" x="885" y="297" text-anchor="middle">Then deterministic template</text>
+
+  <!-- branch: Judge (left) -->
+  <rect class="b" x="110" y="384" width="180" height="34" rx="8"/><text class="bt" x="200" y="406" text-anchor="middle">Judge (no model call)</text>
+  <rect class="l" x="20" y="430" width="200" height="22" rx="5"/><text class="lt" x="120" y="445" text-anchor="middle">Relevance gate: 0 tokens refusal</text>
+  <rect class="l" x="20" y="458" width="200" height="22" rx="5"/><text class="lt" x="120" y="473" text-anchor="middle">Plan cache + answer cache (Redis)</text>
+  <rect class="l" x="20" y="486" width="200" height="22" rx="5"/><text class="lt" x="120" y="501" text-anchor="middle">Template vs model composer</text>
+  <rect class="l" x="20" y="514" width="200" height="22" rx="5"/><text class="lt" x="120" y="529" text-anchor="middle">Circuit breaker on 429s</text>
+  <rect class="l" x="20" y="542" width="200" height="22" rx="5"/><text class="lt" x="120" y="557" text-anchor="middle">Model steering by plan validity</text>
+  <rect class="l" x="20" y="570" width="200" height="22" rx="5"/><text class="lt" x="120" y="585" text-anchor="middle">Anomaly agent (median/MAD z)</text>
+
+  <!-- branch: Model policy (right) -->
+  <rect class="b" x="710" y="384" width="180" height="34" rx="8"/><text class="bt" x="800" y="406" text-anchor="middle">Model policy (Section 7)</text>
+  <rect class="l" x="780" y="430" width="210" height="22" rx="5"/><text class="lt" x="885" y="445" text-anchor="middle">20B ceiling enforced at startup</text>
+  <rect class="l" x="780" y="458" width="210" height="22" rx="5"/><text class="lt" x="885" y="473" text-anchor="middle">Primary gpt-oss-20b (3.6B active)</text>
+  <rect class="l" x="780" y="486" width="210" height="22" rx="5"/><text class="lt" x="885" y="501" text-anchor="middle">Alternate ALLaM 2 7B</text>
+  <rect class="l" x="780" y="514" width="210" height="22" rx="5"/><text class="lt" x="885" y="529" text-anchor="middle">No escalation to larger, ever</text>
+  <rect class="l" x="780" y="542" width="210" height="22" rx="5"/><text class="lt" x="885" y="557" text-anchor="middle">Free-only dropdown, pinned honoured</text>
+  <rect class="l" x="780" y="570" width="210" height="22" rx="5"/><text class="lt" x="885" y="585" text-anchor="middle">LiteLLM: Groq, OpenRouter, Sarvam</text>
+
+  <!-- branch: Data (bottom-left) -->
+  <rect class="b" x="250" y="560" width="160" height="34" rx="8"/><text class="bt" x="330" y="582" text-anchor="middle">Data</text>
+  <rect class="l" x="240" y="604" width="180" height="22" rx="5"/><text class="lt" x="330" y="619" text-anchor="middle">ClickHouse, Decimal64, monthly parts</text>
+  <rect class="l" x="240" y="632" width="180" height="22" rx="5"/><text class="lt" x="330" y="647" text-anchor="middle">Read-only user, server ceilings</text>
+  <rect class="l" x="240" y="660" width="180" height="22" rx="5"/><text class="lt" x="330" y="675" text-anchor="middle">20M rows: 481s load, <210ms queries</text>
+  <rect class="l" x="240" y="688" width="180" height="22" rx="5"/><text class="lt" x="330" y="703" text-anchor="middle">Redis: sessions, caches, breakers</text>
+
+  <!-- branch: Delivery (bottom-right) -->
+  <rect class="b" x="590" y="560" width="160" height="34" rx="8"/><text class="bt" x="670" y="582" text-anchor="middle">Delivery</text>
+  <rect class="l" x="580" y="604" width="180" height="22" rx="5"/><text class="lt" x="670" y="619" text-anchor="middle">FastAPI + SSE live run inspector</text>
+  <rect class="l" x="580" y="632" width="180" height="22" rx="5"/><text class="lt" x="670" y="647" text-anchor="middle">Next.js two-pane UI, CSV export</text>
+  <rect class="l" x="580" y="660" width="180" height="22" rx="5"/><text class="lt" x="670" y="675" text-anchor="middle">Compose, nginx, Cloudflare Tunnel</text>
+  <rect class="l" x="580" y="688" width="180" height="22" rx="5"/><text class="lt" x="670" y="703" text-anchor="middle">Golden set, 23 verified gates, CI</text>
+
+  <!-- branch: Five states (bottom centre) -->
+  <rect class="b" x="420" y="470" width="160" height="34" rx="8"/><text class="bt" x="500" y="492" text-anchor="middle">Five response states</text>
+  <text class="lt" x="500" y="522" text-anchor="middle">answer · clarification_required</text>
+  <text class="lt" x="500" y="537" text-anchor="middle">data_unavailable · out_of_scope · error</text>
+</svg>
