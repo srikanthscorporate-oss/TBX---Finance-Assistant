@@ -22,8 +22,14 @@ if (Math.abs(got - expected.total) > 0.02)
   fail('G2', `figure mismatch: api=${got} independent=${expected.total}`);
 if (ev.total_record_count !== expected.count)
   fail('G2', `record count mismatch: api=${ev.total_record_count} independent=${expected.count}`);
-if (ev.entities_resolved.entity_id !== entity)
-  fail('G2', `scoped to ${ev.entities_resolved.entity_id}, independent default entity is ${entity}`);
+// entities_resolved.entity_id is the MASKED label now: every character starred but the last four.
+const maskedEntity = '*'.repeat(entity.length - 4) + entity.slice(-4);
+const gotEntity = ev.entities_resolved.entity_id;
+if (gotEntity !== maskedEntity)
+  fail('G2', `scoped to ${gotEntity}, masked form of the independent default entity is ${maskedEntity}`);
+if (gotEntity.slice(-4) !== entity.slice(-4))
+  fail('G2', `masked label ends ${gotEntity.slice(-4)}, CSV default entity ends ${entity.slice(-4)}`);
+if (gotEntity.includes(entity)) fail('G2', 'the raw entity id leaked into entities_resolved');
 
 const rendered = total.formatted.replace(/[^\d]/g, '');
 if (!res.answer.replace(/[^\d]/g, '').includes(rendered))
@@ -37,7 +43,14 @@ if (!ev.sql || !ev.sql.includes('{')) fail('G2', 'evidence does not expose param
 if (ev.sql.includes(CP) || ev.sql.includes(entity)) fail('G2', 'a value was interpolated into SQL text, not bound');
 
 const expectedCount = sumWhere(txns, r => r.entity_id === entity && r.txn_date.startsWith(prev) && r.counterparty === CP);
-const cnt = await post('/api/v1/chat', { message: `how many transactions have I made with ${CP} last month` });
+// A count says nothing about the side, so the API asks; answering "both" leaves the type open.
+const ask = await post('/api/v1/chat', { message: `how many transactions have I made with ${CP} last month` });
+if (ask.state !== 'clarification_required' || ask.clarification?.field !== 'transaction_type')
+  fail('G2', `count question state=${ask.state} field=${ask.clarification?.field}, expected a transaction_type ask`);
+if (ask.answer || ask.evidence) fail('G2', 'the transaction_type clarification carried an answer or evidence');
+const cnt = await post('/api/v1/chat', {
+  message: '', conversation_id: ask.conversation_id, resolved_value: 'both',
+});
 if (cnt.state !== 'answer') fail('G2', `count question state=${cnt.state} (${cnt.message || ''})`);
 const count = cnt.evidence.facts.find(f => f.key === 'count');
 if (!count) fail('G2', 'count question produced no count fact');
@@ -47,7 +60,7 @@ if (cnt.plan.transaction_type) fail('G2', `count question narrowed to ${cnt.plan
 
 pass('G2',
   `independent: ${expected.total} over ${expected.count} debits (${prev}, entity ${entity.slice(0, 8)})`,
-  `api:         ${got} over ${ev.total_record_count} rows (${ev.resolved_period})`,
+  `api:         ${got} over ${ev.total_record_count} rows (${ev.resolved_period}), scoped to ${gotEntity}`,
   `count question: ${count.value} = independent ${expectedCount.count} (debits + credits)`,
   `verification ${ev.verification.checks.filter(c => c.passed).length}/${ev.verification.checks.length}, confidence ${ev.confidence.band} ${ev.confidence.score}`,
   `answer: ${res.answer}`);

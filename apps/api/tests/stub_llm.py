@@ -117,7 +117,7 @@ def _scope_and_plan(question: str) -> str:
     txn_type = None
     if re.search(r"\b(spent|spend|paid|pay|sent|debit|debits)\b", q):
         txn_type = "debit"
-    elif re.search(r"\b(received|credited|credit|credits|got)\b", q):
+    elif re.search(r"\b(receive[ds]?|credited|credit|credits|got|incoming)\b", q):
         txn_type = "credit"
 
     min_amount = max_amount = None
@@ -158,6 +158,13 @@ def _scope_and_plan(question: str) -> str:
 
     common = dict(date_range=period, transaction_type=txn_type, channel=channel,
                   account_last4=last4, min_amount=min_amount, max_amount=max_amount)
+    # A listing question asks WHICH accounts or banks exist; a money question that merely
+    # mentions "my accounts" is still a money question.
+    asks_amount = bool(re.search(r"\bhow much\b|\btotal\b|\bsum\b|\bspent?\b|\bspend\b|"
+                                 r"\bcredited\b|\bdebited\b|\breceive[ds]?\b|\bpaid\b|"
+                                 r"\bbalance\b|\bhow many\b", q))
+    if not asks_amount and re.search(r"\bbanks?\b|\baccounts?\b", q):
+        return _plan(intent="account_list", account_last4=last4)
     if "balance" in q:
         return _plan(intent="balance", account_last4=last4)
     if re.search(r"\b(largest|biggest|highest)\b", q):

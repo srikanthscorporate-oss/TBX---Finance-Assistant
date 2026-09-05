@@ -132,7 +132,8 @@ export interface Evidence {
   created_at?: string;
 }
 
-export type ClarificationField = 'counterparty' | 'account' | 'date_range' | 'guided';
+export type ClarificationField =
+  | 'entity' | 'transaction_type' | 'counterparty' | 'account' | 'date_range' | 'guided';
 
 export interface ClarificationOption { label: string; value: string; hint?: string | null }
 
@@ -189,7 +190,14 @@ export interface DatasetInfo {
   banks: Record<string, string>;
 }
 
-export interface EntityInfo { entity_id: string; accounts: number; default: boolean }
+export interface EntityInfo {
+  /** AES-256-GCM token for the entity id; the plaintext id never reaches the browser. */
+  entity_id: string;
+  /** Masked id, all but the last four characters starred. */
+  label: string;
+  accounts: number;
+  default: boolean;
+}
 
 export interface AccountInfo {
   account_id: string; entity_id: string; account: string; bank_code: string;
@@ -338,6 +346,10 @@ export interface IngestProgress {
 export interface SourceStatus {
   progress: IngestProgress;
   active_source: SourceTarget | null;
+  /** The ClickHouse database the chatbot is answering from right now. */
+  active_database: string;
+  /** True while that is the bundled dataset rather than an ingested endpoint. */
+  bundled: boolean;
   dataset: {
     dataset_version: string; min_date: string; max_date: string;
     accounts: number; counterparties: number; entities: number;

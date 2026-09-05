@@ -17,6 +17,7 @@ from ..contracts.evidence import (
 from ..contracts.plan import FinanceQueryPlan
 from ..services import composer as comp
 from ..services.compiler import CompiledQuery
+from ..services import entity_token
 from ..services.crypto import FieldCipher
 from .context import DatasetContext, RunContext
 
@@ -75,7 +76,9 @@ class EvidenceBuilder:
             breakdown_columns=cq.columns,
             sample_records=self._samples(rows),
             records=records,
-            record_columns=(ACCOUNT_COLUMNS if cq.kind == "detail" and plan.intent is Intent.BALANCE
+            record_columns=(ACCOUNT_COLUMNS
+                            if cq.kind == "detail"
+                            and plan.intent in {Intent.BALANCE, Intent.ACCOUNT_LIST}
                             else RECORD_COLUMNS) if records else [],
             total_record_count=count,
             resolved_period=plan.date_range.resolved_label if plan.date_range else None,
@@ -90,7 +93,7 @@ class EvidenceBuilder:
                 "transaction_type": plan.transaction_type.value if plan.transaction_type else None,
                 "reference": plan.reference,
                 "reference_kind": plan.reference_kind.value if plan.reference_kind else None,
-                "entity_id": plan.entity_id,
+                "entity_id": entity_token.mask(plan.entity_id),
             }.items() if v},
             sql=cq.sql,
             sql_params=cq.display()["params"],
@@ -134,6 +137,13 @@ class EvidenceBuilder:
             facts.append(ComputedFact(
                 key="group_count", value=len(rows), kind="count",
                 formatted=comp.format_count(len(rows))))
+        elif rows and plan.intent is Intent.ACCOUNT_LIST:
+            facts.append(ComputedFact(
+                key="count", value=len(rows), kind="count",
+                formatted=comp.format_count(len(rows))))
+            facts.append(ComputedFact(
+                key="bank_count", value=len({r.get("bank_code") for r in rows}), kind="count",
+                formatted=comp.format_count(len({r.get("bank_code") for r in rows}))))
         elif rows and plan.intent is Intent.BALANCE:
             total = sum(float(r.get("available_balance") or 0) for r in rows)
             facts.append(ComputedFact(
@@ -208,7 +218,7 @@ class EvidenceBuilder:
         four; UTRs are decrypted here because the user asked for that transaction."""
         out: list[dict[str, Any]] = []
         for r in rows:
-            if plan.intent is Intent.BALANCE:
+            if plan.intent in {Intent.BALANCE, Intent.ACCOUNT_LIST}:
                 a = self._acct.get(str(r.get("account_id")))
                 out.append({
                     "account": a.masked if a else f"XXXXXX{r.get('account_last4', '')}",

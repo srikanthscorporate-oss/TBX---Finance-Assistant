@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from ..db.clickhouse import ClickHouseClient, QueryError
 from ..services import composer as comp
+from ..services.active_db import active_db
 
 MIN_HISTORY = 4
 Z_THRESHOLD = 2.5
@@ -27,7 +28,7 @@ class Anomaly:
 def check(ch: ClickHouseClient, counterparty: str, entity_id: str | None,
           start, end, current_value: float, currency: str | None) -> Anomaly:
     sql = ("SELECT toStartOfMonth(txn_date) AS m, sum(transaction_amount) AS v "
-           "FROM tbx_finance.transaction WHERE counterparty = {counterparty:String} "
+           f"FROM {active_db()}.transaction WHERE counterparty = {{counterparty:String}} "
            "AND transaction_type = 'debit' AND txn_date < {start:Date}"
            + (" AND entity_id = {entity_id:String}" if entity_id else "")
            + " GROUP BY m ORDER BY m")

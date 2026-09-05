@@ -1,12 +1,17 @@
 // G4: the SSE endpoint streams ordered agent events and terminates cleanly.
-import { API, fetchRetry, pass, fail } from './_lib.mjs';
+import { API, fetchRetry, entityTokenFor, pass, fail } from './_lib.mjs';
 
 // A fresh amount bound each run so the judge's answer cache cannot short-circuit the query stage.
+// The question is fully specified -- period, side ("spend" = debits) and an exact counterparty --
+// so the run reaches query_executed instead of stopping at a clarification.
 const nonce = 100000 + (Date.now() % 900000);
 const res = await fetchRetry(`${API}/api/v1/chat/stream`, {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ message: `How much did I spend with AIRTEL last month, under ${nonce} rupees?` }),
+  body: JSON.stringify({
+    message: `How much did I spend with SWIGGY INSTAMART last month, under ${nonce} rupees?`,
+    entity_id: await entityTokenFor(),
+  }),
 });
 if (!res.ok) fail('G4', `stream returned ${res.status}`);
 if (!(res.headers.get('content-type') || '').includes('text/event-stream'))

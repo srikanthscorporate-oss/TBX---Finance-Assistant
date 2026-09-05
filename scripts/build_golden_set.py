@@ -7,6 +7,15 @@ application code imported is the narration parser, which is deterministic and is
 loader ran to populate the stored counterparty and channel columns. Relative periods
 anchor to the dataset's latest transaction date, mirroring the contract the app documents.
 Re-run after any dataset change; the runner compares, it does not recompute.
+
+The API assumes nothing. A question that names no period, or does not say whether it means
+money out or money in, is asked about before it is answered, and a counterparty name that
+is ambiguous or only a fuzzy match is confirmed. Each item therefore carries a
+`resolutions` list -- the ordered answers the runner gives, each with the expectation for
+the turn it produces -- and the expected facts below are computed under exactly those
+answers, so a chain that ends in a figure is checked against a number derived from the
+CSVs with the same filters the user chose. Balance and reference lookups carry
+`expected_no_period`: they must be answered outright, never asked for a period or a side.
 """
 from __future__ import annotations
 
@@ -181,6 +190,14 @@ def grouped_facts(rows: list[dict], key: str, metric: str = "sum",
     return facts
 
 
+PERIOD_OPTIONS = ["last_7_days", "last_30_days", "this_month", "last_month",
+                  "last_90_days", "all_time"]
+"""The six periods the API offers when a question names none."""
+
+TYPE_OPTIONS = ["debit", "credit", "both"]
+"""The three sides the API offers when a question does not say which it means."""
+
+
 def build(d: Data) -> list[dict]:
     items: list[dict] = []
 
@@ -188,10 +205,48 @@ def build(d: Data) -> list[dict]:
         items.append({"id": id, "question": question, "category": category,
                       "expected_state": state, **kw})
 
+    def chain(id, question, category, steps, final, **kw):
+        """A question the API must ask about before it answers.
+
+        `steps` is the ordered [(field, value, options)] the user will be asked for and the
+        answer the runner gives; `final` is the expectation for the response after the last
+        answer. Each resolution carries the expectation for the turn it produces, so the
+        runner only has to walk the list.
+        """
+        resolutions = []
+        for i, (field, value, _opts) in enumerate(steps):
+            if i + 1 < len(steps):
+                nxt_field, _v, nxt_opts = steps[i + 1]
+                expect = {"expected_state": "clarification_required",
+                          "expected_clarification_field": nxt_field}
+                if nxt_opts:
+                    expect["expected_options"] = nxt_opts
+            else:
+                expect = dict(final)
+                expect.setdefault("expected_state", "answer")
+            resolutions.append({"field": field, "value": value, "expect": expect})
+        first = {"expected_clarification_field": steps[0][0]}
+        if steps[0][2]:
+            first["expected_options"] = steps[0][2]
+        add(id, question, category, "clarification_required",
+            resolutions=resolutions, **first, **kw)
+
+    def period_step(value):
+        return ("date_range", value, PERIOD_OPTIONS)
+
+    def type_step(value):
+        return ("transaction_type", value, TYPE_OPTIONS)
+
+    def side(value):
+        """Rows for a chosen side: `both` applies no type filter at all."""
+        return None if value == "both" else value
+
+    # --- fully specified spend: the question states the side, so it is answered outright
     def spend(id, question, period, category="spend", **sel):
         rows = d.select(period=period, type="debit", **sel)
         add(id, question, category, expected_intent="spend_summary",
-            expected_period=period, expected_facts=total_facts(rows))
+            expected_period=period, expected_transaction_type="debit",
+            expected_facts=total_facts(rows))
 
     spend("S01", "How much did I spend last month?", "last_month")
     spend("S02", "What was my total spend in the month before last?", "month_before_last")
@@ -211,14 +266,14 @@ def build(d: Data) -> list[dict]:
         add(id, q, "receipts", expected_intent="spend_summary", expected_period=period,
             expected_transaction_type="credit", expected_facts=total_facts(rows))
 
-    rows = d.select(period="last_month")
-    add("N01", "How many transactions were there last month?", "counts",
+    rows = d.select(period="last_month", type="debit")
+    add("N01", "How many debit transactions were there last month?", "counts",
         expected_intent="spend_summary", expected_period="last_month",
-        expected_facts=count_facts(rows))
-    rows = d.select(period="today")
-    add("N02", "How many transactions were there today?", "counts",
+        expected_transaction_type="debit", expected_facts=count_facts(rows))
+    rows = d.select(period="today", type="credit")
+    add("N02", "How many credit transactions were there today?", "counts",
         expected_intent="spend_summary", expected_period="today",
-        expected_facts=count_facts(rows))
+        expected_transaction_type="credit", expected_facts=count_facts(rows))
 
     for id, q, name, period, metric in [
         ("C01", "How much did I spend with Swiggy Instamart last month?", "SWIGGY INSTAMART",
@@ -226,82 +281,89 @@ def build(d: Data) -> list[dict]:
         ("C02", "How much did I pay Zomato last quarter?", "ZOMATO", "last_quarter", "sum"),
         ("C03", "What did I spend with Amazon Pay India in the last 30 days?", "AMAZON PAY INDIA",
          "last_30_days", "sum"),
-        ("C04", "How many transactions with Zomato in the last 90 days?", "ZOMATO",
+        ("C04", "How many debit transactions with Zomato in the last 90 days?", "ZOMATO",
          "last_90_days", "count"),
         ("C05", "How much did I spend with Airtel this year?", "AIRTEL", "this_year", "sum"),
-        ("C06", "How much did I pay Uber in the last 6 months?", "UBER INDIA",
-         "last_6_months", "sum"),
         ("C07", "How much did I spend with Bigbasket last month?", "BIGBASKET", "last_month",
          "sum"),
-        ("C08", "How many transactions with Bigbasket were there last month?",
+        ("C08", "How many debits with Bigbasket were there last month?",
          "BIGBASKET", "last_month", "count"),
     ]:
-        if metric == "sum":
-            rows = d.select(period=period, type="debit", counterparty=name)
-            facts = total_facts(rows)
-        else:
-            rows = d.select(period=period, counterparty=name)
-            facts = count_facts(rows)
+        rows = d.select(period=period, type="debit", counterparty=name)
+        facts = total_facts(rows) if metric == "sum" else count_facts(rows)
         add(id, q, "counterparty", expected_intent="counterparty_spend",
-            expected_counterparty=name, expected_period=period, expected_facts=facts)
+            expected_counterparty=name, expected_period=period,
+            expected_transaction_type="debit", expected_facts=facts)
 
-    rows = d.select(period="last_month", max_amount=500)
-    add("F01", "List transactions under 500 rupees last month", "amount_filter",
+    rows = d.select(period="last_6_months", type="debit", counterparty="UBER INDIA")
+    chain("C06", "How much did I pay Uber in the last 6 months?", "counterparty",
+          [("counterparty", "UBER INDIA", ["UBER INDIA"])],
+          {"expected_intent": "counterparty_spend", "expected_counterparty": "UBER INDIA",
+           "expected_period": "last_6_months", "expected_transaction_type": "debit",
+           "expected_facts": total_facts(rows)})
+
+    rows = d.select(period="last_month", type="debit", max_amount=500)
+    add("F01", "List the debit transactions under 500 rupees last month", "amount_filter",
         expected_intent="transaction_lookup", expected_period="last_month",
-        expected_facts=list_facts(rows))
-    rows = d.select(period="last_90_days", min_amount=100000)
-    add("F02", "Show transactions over ₹1,00,000 in the last 90 days", "amount_filter",
+        expected_transaction_type="debit", expected_facts=list_facts(rows))
+    rows = d.select(period="last_90_days", type="debit", min_amount=100000)
+    add("F02", "Show debits over ₹1,00,000 in the last 90 days", "amount_filter",
         expected_intent="transaction_lookup", expected_period="last_90_days",
-        expected_facts=list_facts(rows))
-    rows = d.select(period="last_7_days", min_amount=1000, max_amount=5000)
-    add("F03", "Which transactions were between 1,000 and 5,000 in the last 7 days?",
+        expected_transaction_type="debit", expected_facts=list_facts(rows))
+    rows = d.select(period="last_7_days", type="credit", min_amount=1000, max_amount=5000)
+    add("F03", "Which credits were between 1,000 and 5,000 in the last 7 days?",
         "amount_filter", expected_intent="transaction_lookup", expected_period="last_7_days",
-        expected_facts=list_facts(rows))
-    rows = d.select(period="last_month", max_amount=500)
-    add("F04", "How many transactions under 500 were there last month?", "amount_filter",
+        expected_transaction_type="credit", expected_facts=list_facts(rows))
+    rows = d.select(period="last_month", type="debit", max_amount=500)
+    add("F04", "How many debit transactions under 500 were there last month?", "amount_filter",
         expected_intent="spend_summary", expected_period="last_month",
-        expected_facts=count_facts(rows))
+        expected_transaction_type="debit", expected_facts=count_facts(rows))
     rows = d.select(period="last_month", type="debit", min_amount=50000)
     add("F05", "How much did I spend on payments over 50,000 last month?", "amount_filter",
         expected_intent="spend_summary", expected_period="last_month",
-        expected_facts=total_facts(rows))
+        expected_transaction_type="debit", expected_facts=total_facts(rows))
 
     rows = d.select(period="last_month", type="debit", channel="UPI")
     add("H01", "How much did I spend via UPI last month?", "channel",
         expected_intent="spend_summary", expected_period="last_month",
-        expected_channel="UPI", expected_facts=total_facts(rows))
-    rows = d.select(period="last_30_days", channel="NEFT")
-    add("H02", "How many NEFT transactions were there in the last 30 days?", "channel",
+        expected_channel="UPI", expected_transaction_type="debit",
+        expected_facts=total_facts(rows))
+    rows = d.select(period="last_30_days", type="debit", channel="NEFT")
+    add("H02", "How many NEFT debits were there in the last 30 days?", "channel",
         expected_intent="spend_summary", expected_period="last_30_days",
-        expected_channel="NEFT", expected_facts=count_facts(rows))
+        expected_channel="NEFT", expected_transaction_type="debit",
+        expected_facts=count_facts(rows))
     rows = d.select(period="last_7_days", channel="IMPS")
-    add("H03", "List IMPS transactions in the last 7 days", "channel",
-        expected_intent="transaction_lookup", expected_period="last_7_days",
-        expected_channel="IMPS", expected_facts=list_facts(rows))
+    chain("H03", "List IMPS transactions in the last 7 days", "channel",
+          [type_step("both")],
+          {"expected_intent": "transaction_lookup", "expected_period": "last_7_days",
+           "expected_channel": "IMPS", "expected_facts": list_facts(rows)})
     rows = d.select(period="last_month", type="debit")
     add("H04", "Break down last month's spend by channel", "channel",
         expected_intent="channel_breakdown", expected_period="last_month",
-        expected_grouped=True, expected_facts=grouped_facts(rows, "channel"))
+        expected_transaction_type="debit", expected_grouped=True,
+        expected_facts=grouped_facts(rows, "channel"))
 
     rows = d.select(period="last_7_days", counterparty="ZOMATO")
-    add("L01", "Show me the transactions with Zomato in the last 7 days", "lists",
-        expected_intent="transaction_lookup", expected_counterparty="ZOMATO",
-        expected_period="last_7_days", expected_facts=list_facts(rows))
+    chain("L01", "Show me the transactions with Zomato in the last 7 days", "lists",
+          [type_step("both")],
+          {"expected_intent": "transaction_lookup", "expected_counterparty": "ZOMATO",
+           "expected_period": "last_7_days", "expected_facts": list_facts(rows)})
     rows = d.select(period="today", type="credit")
     add("L02", "List the credits I received today", "lists",
         expected_intent="transaction_lookup", expected_period="today",
         expected_transaction_type="credit", expected_facts=list_facts(rows))
-    rows = d.select(period="last_month", max_amount=500)
-    add("L03", "List transactions less than 500 rupees", "lists", "clarification_required",
-        expected_intent="transaction_lookup", expected_clarification_field="date_range",
-        clarify_with={"value": "last_month", "field": "date_range",
-                      "expected_state": "answer", "expected_period": "last_month",
-                      "expected_facts": list_facts(rows)})
+    rows = d.select(period="last_month", type="debit", max_amount=500)
+    chain("L03", "List transactions less than 500 rupees", "lists",
+          [period_step("last_month"), type_step("debit")],
+          {"expected_intent": "transaction_lookup", "expected_period": "last_month",
+           "expected_transaction_type": "debit", "expected_facts": list_facts(rows)})
 
     rows = d.select(period="last_month", type="debit")
     biggest = max(rows, key=lambda r: (r["amount"], r["transaction_id"]))
-    add("G01", "What were the largest transactions last month?", "largest",
+    add("G01", "What were the largest debits last month?", "largest",
         expected_intent="largest_transactions", expected_period="last_month",
+        expected_transaction_type="debit",
         expected_facts={"count": exact(len(rows)), "record_count": exact(len(rows))},
         expected_first_record={"amount": biggest["amount"]})
     rows = d.select(period="this_year", type="credit")
@@ -311,6 +373,14 @@ def build(d: Data) -> list[dict]:
         expected_period="this_year",
         expected_facts={"count": exact(len(rows)), "record_count": exact(len(rows))},
         expected_first_record={"amount": biggest["amount"]})
+    rows = d.select(period="last_month", type="credit")
+    biggest = max(rows, key=lambda r: (r["amount"], r["transaction_id"]))
+    chain("G03", "What were the largest transactions last month?", "largest",
+          [type_step("credit")],
+          {"expected_intent": "largest_transactions", "expected_period": "last_month",
+           "expected_transaction_type": "credit",
+           "expected_facts": {"count": exact(len(rows)), "record_count": exact(len(rows))},
+           "expected_first_record": {"amount": biggest["amount"]}})
 
     for id, q, period in [
         ("T01", "Who did I pay the most last month?", "last_month"),
@@ -319,19 +389,20 @@ def build(d: Data) -> list[dict]:
     ]:
         rows = d.select(period=period, type="debit")
         add(id, q, "top_counterparties", expected_intent="top_counterparties",
-            expected_period=period, expected_grouped=True,
+            expected_period=period, expected_transaction_type="debit", expected_grouped=True,
             expected_facts=grouped_facts(rows, "counterparty", limit=10))
 
+    # --- balance and reference lookups are answered outright: never a period or a side
     full_numbers = [a["account_number"] for a in d.entity_accounts]
     add("B01", "What is my account balance?", "balance",
-        expected_intent="balance",
+        expected_intent="balance", expected_no_period=True,
         expected_facts={"balance_total": money(sum(float(a["available_balance"])
                                                    for a in d.entity_accounts)),
                         "count": exact(len(d.entity_accounts))},
         must_not_contain=full_numbers)
     acct = max(d.entity_accounts, key=lambda a: float(a["available_balance"]))
     add("B02", f"What is the balance of the account ending {acct['account_number'][-4:]}?",
-        "balance", expected_intent="balance",
+        "balance", expected_intent="balance", expected_no_period=True,
         expected_facts={"balance_total": money(float(acct["available_balance"])),
                         "count": exact(1)},
         expected_first_record={"account": "XXXXXX" + acct["account_number"][-4:]},
@@ -344,7 +415,7 @@ def build(d: Data) -> list[dict]:
         ("X02", "What was reference number {ref}?", ordered[7]),
     ]:
         add(id, template.format(ref=r["reference"]), "reference",
-            expected_intent="reference_lookup",
+            expected_intent="reference_lookup", expected_no_period=True,
             expected_facts={"amount": money(r["amount"]), "count": exact(1),
                             "counterparty": exact(r["counterparty"] or "unnamed"),
                             "txn_type": exact(r["type"])},
@@ -358,7 +429,7 @@ def build(d: Data) -> list[dict]:
         ("X04", "Show me the payment with UTR {utr}", with_utr[5]),
     ]:
         add(id, template.format(utr=r["utr"]), "reference",
-            expected_intent="reference_lookup",
+            expected_intent="reference_lookup", expected_no_period=True,
             expected_facts={"amount": money(r["amount"]), "count": exact(1),
                             "counterparty": exact(r["counterparty"] or "unnamed")},
             expected_first_record={"utr": r["utr"], "amount": r["amount"],
@@ -381,11 +452,11 @@ def build(d: Data) -> list[dict]:
         follow_up={"question": "Show me those transactions", "expected_state": "answer",
                    "expected_intent": "transaction_lookup", "expected_counterparty": "ZOMATO",
                    "expected_period": "last_month", "expected_facts": list_facts(rows)})
-    rows = d.select(period="yesterday")
+    rows = d.select(period="yesterday", type="debit")
     credits = d.select(period="yesterday", type="credit")
-    add("P03", "How many transactions were there yesterday?", "multi_turn",
+    add("P03", "How many debit transactions were there yesterday?", "multi_turn",
         expected_intent="spend_summary", expected_period="yesterday",
-        expected_facts=count_facts(rows),
+        expected_transaction_type="debit", expected_facts=count_facts(rows),
         follow_up={"question": "Just the credits", "expected_state": "answer",
                    "expected_transaction_type": "credit", "expected_period": "yesterday",
                    "expected_facts": count_facts(credits)})
@@ -404,34 +475,75 @@ def build(d: Data) -> list[dict]:
                    "expected_grouped": True, "expected_period": "last_month",
                    "expected_facts": grouped_facts(rows, "channel")})
 
-    swiggy_all = d.select(counterparty="SWIGGY")
-    add("A01", "How many transactions have I made with Swiggy?", "ambiguous",
-        "clarification_required", expected_clarification_field="counterparty",
-        expected_options=["SWIGGY", "SWIGGY INSTAMART"],
-        clarify_with={"value": "SWIGGY", "field": "counterparty", "expected_state": "answer",
-                      "expected_counterparty": "SWIGGY",
-                      "expected_facts": count_facts(swiggy_all)})
+    # --- deliberate clarification chains: an ambiguous name, a fuzzy name, no period, no side
+    swiggy = ["SWIGGY", "SWIGGY INSTAMART"]
     rows = d.select(period="last_month", type="debit", counterparty="SWIGGY INSTAMART")
-    add("A02", "How much did I spend with Swiggy last month?", "ambiguous",
-        "clarification_required", expected_clarification_field="counterparty",
-        expected_options=["SWIGGY", "SWIGGY INSTAMART"],
-        clarify_with={"value": "SWIGGY INSTAMART", "field": "counterparty",
-                      "expected_state": "answer", "expected_counterparty": "SWIGGY INSTAMART",
-                      "expected_period": "last_month", "expected_facts": total_facts(rows)})
+    chain("A01", "How much did I spend with Swiggy last month?", "ambiguous",
+          [("counterparty", "SWIGGY INSTAMART", swiggy)],
+          {"expected_intent": "counterparty_spend",
+           "expected_counterparty": "SWIGGY INSTAMART", "expected_period": "last_month",
+           "expected_transaction_type": "debit", "expected_facts": total_facts(rows)})
+    rows = d.select(counterparty="SWIGGY")
+    chain("A02", "How many transactions have I made with Swiggy?", "ambiguous",
+          [("counterparty", "SWIGGY", swiggy), period_step("all_time"), type_step("both")],
+          {"expected_counterparty": "SWIGGY", "expected_period": "all_time",
+           "expected_facts": count_facts(rows)})
     rows = d.select(period="last_7_days", counterparty="SWIGGY")
-    add("A03", "Show me the Swiggy transactions from the last 7 days", "ambiguous",
-        "clarification_required", expected_clarification_field="counterparty",
-        expected_options=["SWIGGY", "SWIGGY INSTAMART"],
-        clarify_with={"value": "SWIGGY", "field": "counterparty", "expected_state": "answer",
-                      "expected_counterparty": "SWIGGY", "expected_period": "last_7_days",
-                      "expected_facts": list_facts(rows)})
+    chain("A03", "Show me the Swiggy transactions from the last 7 days", "ambiguous",
+          [("counterparty", "SWIGGY", swiggy), type_step("both")],
+          {"expected_intent": "transaction_lookup", "expected_counterparty": "SWIGGY",
+           "expected_period": "last_7_days", "expected_facts": list_facts(rows)})
     rows = d.select(period="last_month", type="debit", counterparty="SELECTION MOBILE")
-    add("A04", "What did I pay Selection last month?", "ambiguous",
-        "clarification_required", expected_clarification_field="counterparty",
-        expected_options=["SELECTION ELECTRONICS", "SELECTION MOBILE"],
-        clarify_with={"value": "SELECTION MOBILE", "field": "counterparty",
-                      "expected_state": "answer", "expected_counterparty": "SELECTION MOBILE",
-                      "expected_period": "last_month", "expected_facts": total_facts(rows)})
+    chain("A04", "What did I pay Selection last month?", "ambiguous",
+          [("counterparty", "SELECTION MOBILE",
+            ["SELECTION ELECTRONICS", "SELECTION MOBILE"])],
+          {"expected_counterparty": "SELECTION MOBILE", "expected_period": "last_month",
+           "expected_transaction_type": "debit", "expected_facts": total_facts(rows)})
+    rows = d.select(period="last_month", type="debit", counterparty="AMAZON PAY INDIA")
+    chain("A05", "How much did I spend with amazon last month?", "ambiguous",
+          [("counterparty", "AMAZON PAY INDIA",
+            ["AMAZON PAY INDIA", "AMAZON SELLER SERVICES"])],
+          {"expected_counterparty": "AMAZON PAY INDIA", "expected_period": "last_month",
+           "expected_transaction_type": "debit", "expected_facts": total_facts(rows)})
+    rows = d.select(period="last_30_days", type="credit", counterparty="AMAZON SELLER SERVICES")
+    chain("A06", "What did amazon send me in the last 30 days?", "ambiguous",
+          [("counterparty", "AMAZON SELLER SERVICES",
+            ["AMAZON PAY INDIA", "AMAZON SELLER SERVICES"]), type_step("credit")],
+          {"expected_counterparty": "AMAZON SELLER SERVICES",
+           "expected_period": "last_30_days", "expected_transaction_type": "credit",
+           "expected_facts": total_facts(rows)})
+
+    rows = d.select(period="last_month", type="credit")
+    chain("K01", "What was the total value of my transactions last month?", "no_assumptions",
+          [type_step("credit")],
+          {"expected_period": "last_month", "expected_transaction_type": "credit",
+           "expected_facts": total_facts(rows)})
+    rows = d.select(period="last_90_days")
+    chain("K02", "How many transactions were there in the last 90 days?", "no_assumptions",
+          [type_step("both")],
+          {"expected_period": "last_90_days", "expected_facts": count_facts(rows)})
+    rows = d.select(period="this_month", type="debit")
+    chain("K03", "Who did I pay the most?", "no_assumptions",
+          [period_step("this_month")],
+          {"expected_intent": "top_counterparties", "expected_period": "this_month",
+           "expected_transaction_type": "debit", "expected_grouped": True,
+           "expected_facts": grouped_facts(rows, "counterparty", limit=10)})
+    rows = d.select(period="last_30_days", type="debit", channel="UPI")
+    chain("K04", "How much did I spend on UPI?", "no_assumptions",
+          [period_step("last_30_days")],
+          {"expected_period": "last_30_days", "expected_channel": "UPI",
+           "expected_transaction_type": "debit", "expected_facts": total_facts(rows)})
+
+    # No two accounts in this dataset share their last four digits, so the account
+    # clarification can only be exercised by a last four that matches nothing: the API
+    # reports it absent and lists the accounts to pick from, masked.
+    missing_last4 = _unused_last4(d)
+    add("K05", f"What is the balance of the account ending {missing_last4}?",
+        "no_assumptions", "data_unavailable", expected_clarification_field="account",
+        must_not_contain=full_numbers)
+    add("K06", f"Show me the transactions on the account ending {missing_last4}",
+        "no_assumptions", "data_unavailable", expected_clarification_field="account",
+        must_not_contain=full_numbers)
 
     add("D01", "Which transactions are still unreconciled?", "missing_data", "data_unavailable")
     add("D02", "Break down last month's spend by category", "missing_data", "data_unavailable")
@@ -452,16 +564,29 @@ def build(d: Data) -> list[dict]:
     return items
 
 
+def _unused_last4(d: Data) -> str:
+    """Four digits no account in the whole dataset ends with."""
+    taken = {a["account_number"][-4:] for a in d.accounts.values()}
+    for n in range(10000):
+        s = f"{n:04d}"
+        if s not in taken:
+            return s
+    raise RuntimeError("every last-four combination is in use")
+
+
 def main() -> int:
     d = Data()
     items = build(d)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(items, indent=2, ensure_ascii=False))
     turns = len(items) + sum(1 for i in items if i.get("follow_up")) \
-        + sum(1 for i in items if i.get("clarify_with"))
+        + sum(len(i.get("resolutions") or []) for i in items)
     print(f"wrote {len(items)} questions ({turns} turns) to {OUT.relative_to(ROOT)}")
     print(f"entity {d.entity} ({len(d.rows):,} transactions), "
           f"window {d.min_date}..{d.max_date}")
+    chains = [i for i in items if i.get("resolutions")]
+    print(f"  {len(chains)} clarification chains, longest "
+          f"{max((len(i['resolutions']) for i in chains), default=0)} steps")
     for cat, n in sorted(Counter(i["category"] for i in items).items()):
         print(f"  {cat:18} {n}")
     return 0

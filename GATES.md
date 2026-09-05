@@ -131,3 +131,18 @@ ABANDON: G12 Blocked on credentials this environment does not have: no SSH key, 
   CHECK: node scripts/verify/lint_baseline.mjs
   EXPECT: LINT_BASELINE_PASS
   EVIDENCE: pending
+
+- [x] G27: Entity scoping: with no entity chosen nothing is answered - the API asks with field=entity offering masked labels (all characters starred but the last four) and opaque tokens that appear nowhere in account.csv; answering with a token answers the question against an independently computed figure; a DIFFERENT entity token on the same conversation is refused with out_of_scope starting exactly "I don't have any Idea what you're talking about." and carrying no answer, evidence or plan, while the original token still answers; garbage, tampered and raw-uuid tokens never answer; and no response body in the whole flow carries a raw entity uuid, with a positive control proving the checker sees one.
+  CHECK: node scripts/verify/entity_scope.mjs
+  EXPECT: GATE_ENTITY_SCOPE_PASS
+  EVIDENCE: pending
+
+- [x] G28: Nothing is assumed. A question with no period and no side is asked for the period, then the side, and never answered first; choosing "both" leaves the plan's transaction_type null and yields the independent both-types figure while choosing "debit" yields the independent debit-only figure, and the two differ; an ambiguous counterparty produces a counterparty clarification rather than a guess; a balance question is asked for neither a period nor a type.
+  CHECK: node scripts/verify/no_assumptions.mjs
+  EXPECT: GATE_NO_ASSUMPTIONS_PASS
+  EVIDENCE: pending
+
+- [x] G29: The web app requires an entity before the chat opens, remembers the choice and the transcript across navigation and reloads by the stable masked label (the token is re-encrypted per fetch), refuses an entity switch until the history is cleared, and wires Clear History to the endpoint that resets conversations and the observability counters.
+  CHECK: TBX_ORIGIN=http://127.0.0.1:3000 node scripts/verify/entity_ui.mjs
+  EXPECT: GATE_ENTITY_UI_PASS
+  EVIDENCE: pending

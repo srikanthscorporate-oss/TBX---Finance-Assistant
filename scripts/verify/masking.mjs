@@ -1,5 +1,5 @@
 // G15: no full account number reaches any response body, and every account-shaped field is masked.
-import { API, fetchRetry, parseCsv, dataPath, loadTransactions, loadAccounts, defaultEntity, pass, fail } from './_lib.mjs';
+import { API, fetchRetry, parseCsv, dataPath, loadTransactions, loadAccounts, defaultEntity, entityTokenFor, pass, fail } from './_lib.mjs';
 
 const txns = loadTransactions();
 const entity = defaultEntity(txns);
@@ -29,8 +29,13 @@ function leaks(body) {
   return problems;
 }
 
+const token = await entityTokenFor();
+const scope = `entity_id=${encodeURIComponent(token)}`;
+
+// Every question states its period and its side, so the run answers instead of asking, and the
+// checker actually sees detail records rather than a clarification body.
 async function chat(message) {
-  const r = await fetchRetry(`${API}/api/v1/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message }) });
+  const r = await fetchRetry(`${API}/api/v1/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message, entity_id: token }) });
   const body = await r.text();
   let state = '?';
   try { state = JSON.parse(body).state; } catch {}
@@ -42,26 +47,33 @@ async function raw(path) {
 }
 
 const samples = [
-  await chat('show me my transactions last month'),
+  await chat('show me my debit transactions last month'),
   await chat(`UTR ${utr}`),
   await chat('what is my balance?'),
-  await chat('What are my largest transactions last month?'),
-  await chat('Who are my top counterparties last month?'),
+  await chat('What are my largest debits last month?'),
+  await chat('Who are my top counterparties by debits last month?'),
   await chat('How much did I spend with SWIGGY INSTAMART last month?'),
-  await chat('show me transactions under 500 rupees last month'),
-  await chat('what did I receive last month?'),
-  await raw(`${await dataPath('export.csv')}?intent=transaction_lookup&relative=last_90_days&limit=1000`),
-  await raw(`${await dataPath('accounts')}?entity_id=${entity}`),
-  await raw(`${await dataPath('transactions')}?entity_id=${entity}&relative=all_time&limit=1000`),
+  await chat('list my debits under 500 rupees last month'),
+  await chat('what credits did I receive last month?'),
+  await raw(`${await dataPath('export.csv')}?intent=transaction_lookup&relative=last_90_days&limit=1000&${scope}`),
+  await raw(`${await dataPath('accounts')}?${scope}`),
+  await raw(`${await dataPath('transactions')}?${scope}&relative=all_time&limit=1000`),
 ];
 const notes = [];
 const failures = [];
 for (const s of samples) {
+  if (s.label.startsWith('chat ') && s.state !== 'answer')
+    failures.push(`${s.label} did not answer (state=${s.state}); the checker saw no real body`);
   const p = leaks(s.body);
   notes.push(`${s.label} -> ${s.state}, ${s.body.length} bytes, ${p.length ? p.length + ' leaks' : 'clean'}`);
   if (p.length) failures.push(`${s.label}: ${[...new Set(p)].slice(0, 3).join('; ')}`);
 }
-if (!samples.some(s => s.body.includes('"records":[{'))) failures.push('no chat sample carried records; the checker saw no detail rows');
+if (!samples.some(s => s.label.startsWith('chat ') && s.body.includes('"records":[{')))
+  failures.push('no chat sample carried records; the checker saw no detail rows');
+const balance = samples.find(s => s.label.includes('balance'));
+if (!balance || !/balance_total/.test(balance.body)) failures.push('the balance question produced no balance rows');
+const exported = samples.find(s => s.label.includes('export.csv'));
+if (!exported || parseCsv(exported.body).length === 0) failures.push('the CSV export was empty; nothing to check for leaks');
 
 const control = leaks(JSON.stringify({ state: 'answer', evidence: { records: [{ account: numbers[0] }] }, answer: `paid from ${numbers[0]}` }));
 if (!control.length) fail('MASKING', 'positive control passed: the checker cannot see a real account number');

@@ -126,7 +126,8 @@ def resolve_counterparty(query: str, counterparties: list[CounterpartyRecord]) -
     """A single exact normalised hit wins; several close fuzzy hits are ambiguous.
 
     "Swiggy" against SWIGGY and SWIGGY INSTAMART is the canonical ambiguous case and
-    yields both as options rather than a guess.
+    yields both as options rather than a guess. A unique fuzzy hit still carries its
+    runners-up, so the pipeline can offer them when it confirms an inexact match.
     """
     q = normalize(query)
     if not q:
@@ -159,7 +160,7 @@ def resolve_counterparty(query: str, counterparties: list[CounterpartyRecord]) -
         close = [c for c in scored if scored[0].score - c.score < AMBIGUITY_MARGIN]
         return Resolution(MatchKind.AMBIGUOUS, query, close[:8])
 
-    return Resolution(MatchKind.UNIQUE_FUZZY, query, scored[:1])
+    return Resolution(MatchKind.UNIQUE_FUZZY, query, scored[:6])
 
 
 @dataclass

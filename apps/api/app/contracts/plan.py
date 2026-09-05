@@ -90,6 +90,7 @@ class FinanceQueryPlan(BaseModel):
     date_range: DateRange | None = None
     compare_to: DateRange | None = None
     transaction_type: TransactionType | None = None
+    include_both_types: bool = False
     channel: Channel | None = None
     min_amount: float | None = Field(default=None, ge=0)
     max_amount: float | None = Field(default=None, ge=0)
@@ -122,9 +123,9 @@ class FinanceQueryPlan(BaseModel):
     def _intent_requirements(self) -> "FinanceQueryPlan":
         """Intent-level coherence.
 
-        Spend intents are debits only, so a "how much did I spend" answer can never mix in
-        credits. A counterparty intent needs a counterparty or a grouping across them. A
-        reference lookup needs the reference and defaults to the plaintext reference id.
+    A counterparty intent needs a counterparty or a grouping across them. A reference
+        lookup needs the reference and defaults to the plaintext reference id. The
+        debit/credit split is never inferred here; the pipeline asks when it is unstated.
         """
         if self.intent is Intent.PERIOD_COMPARISON and self.compare_to is None:
             raise ValueError("period_comparison requires `compare_to`")
@@ -142,10 +143,6 @@ class FinanceQueryPlan(BaseModel):
         elif self.reference and self.reference_kind is None:
             self.reference_kind = ReferenceKind.REFERENCE
 
-        if self.intent in {Intent.SPEND_SUMMARY, Intent.COUNTERPARTY_SPEND,
-                           Intent.TOP_COUNTERPARTIES, Intent.LARGEST_TRANSACTIONS}:
-            if self.transaction_type is None and self.metric is not Metric.COUNT:
-                self.transaction_type = TransactionType.DEBIT
 
         if self.min_amount is not None and self.max_amount is not None:
             if self.min_amount > self.max_amount:
@@ -185,6 +182,7 @@ class PlanDelta(BaseModel):
     date_range: DateRange | None = None
     compare_to: DateRange | None = None
     transaction_type: TransactionType | None = None
+    include_both_types: bool | None = None
     channel: Channel | None = None
     min_amount: float | None = None
     max_amount: float | None = None
@@ -210,9 +208,4 @@ class PlanDelta(BaseModel):
             data["counterparty"] = None
         if self.account_last4 is not None:
             data["account_id"] = None
-        if self.intent is not None and self.intent not in {
-                Intent.SPEND_SUMMARY, Intent.COUNTERPARTY_SPEND,
-                Intent.TOP_COUNTERPARTIES, Intent.LARGEST_TRANSACTIONS}:
-            if self.transaction_type is None and "transaction_type" not in self.clear:
-                data["transaction_type"] = base.transaction_type
         return FinanceQueryPlan.model_validate(data)

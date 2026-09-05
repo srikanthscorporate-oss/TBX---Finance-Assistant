@@ -31,8 +31,29 @@ function optionRequest(turn: Turn, o: ClarificationOption): Ask {
   return { question: o.label };
 }
 
-function shortEntity(id: string): string {
-  return id.length > 13 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
+const ENTITY_KEY = 'tbx.entity';
+const TRANSCRIPT_KEY = 'tbx.transcript';
+
+/** The token is re-encrypted with a fresh nonce on every fetch, so the stable identity a
+ *  reload can match on is the masked label. */
+interface Saved { label: string; conversationId: string | null }
+
+/** The conversation and its entity survive a reload; both are cleared by Clear History. */
+function loadStored<T>(key: string): T | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+function store(key: string, value: unknown): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* private mode */
+  }
 }
 
 export default function Workbench() {
@@ -45,6 +66,9 @@ export default function Workbench() {
   const [datasetError, setDatasetError] = useState<string | null>(null);
   const [entities, setEntities] = useState<EntityInfo[]>([]);
   const [entityId, setEntityId] = useState<string | null>(null);
+  const [entityLabel, setEntityLabel] = useState<string | null>(null);
+  const [entityReady, setEntityReady] = useState(false);
+    const [switchBlocked, setSwitchBlocked] = useState(false);
   const conversationId = useRef<string | null>(null);
   const feedEnd = useRef<HTMLDivElement>(null);
 
@@ -52,24 +76,52 @@ export default function Workbench() {
     getDataset().then(setDataset).catch(e => setDatasetError(String(e?.message ?? e)));
     getEntities().then(list => {
       setEntities(list);
-      setEntityId(prev => prev ?? (list.find(e => e.default) ?? list[0])?.entity_id ?? null);
-    }).catch(() => setEntities([]));
+      const saved = loadStored<Saved>(ENTITY_KEY);
+      const match = saved && list.find(e => e.label === saved.label);
+      if (saved && match) {
+        setEntityLabel(saved.label);
+        setEntityId(match.entity_id);
+        conversationId.current = saved.conversationId;
+        setTurns(loadStored<Turn[]>(TRANSCRIPT_KEY) ?? []);
+      }
+      setEntityReady(true);
+    }).catch(() => { setEntities([]); setEntityReady(true); });
   }, []);
+
+  useEffect(() => {
+    if (entityLabel) store(ENTITY_KEY, { label: entityLabel, conversationId: conversationId.current });
+  }, [entityLabel, turns]);
+
+  useEffect(() => {
+    if (turns.length) store(TRANSCRIPT_KEY, turns.slice(-40));
+  }, [turns]);
 
   useEffect(() => {
     const reset = () => {
       conversationId.current = null;
       setTurns([]);
       setSelectedId(null);
+      setSwitchBlocked(false);
+      setEntityId(null);
+      setEntityLabel(null);
+      try {
+        window.localStorage.removeItem(ENTITY_KEY);
+        window.localStorage.removeItem(TRANSCRIPT_KEY);
+      } catch {
+        /* private mode */
+      }
     };
     window.addEventListener(HISTORY_CLEARED_EVENT, reset);
     return () => window.removeEventListener(HISTORY_CLEARED_EVENT, reset);
   }, []);
 
-  // Changing the entity starts a fresh conversation so no parked plan crosses scopes.
+  // An entity is chosen once per conversation. Switching would re-scope turns that were
+  // answered for someone else, so it is refused until the history is cleared.
   const changeEntity = (id: string) => {
     if (id === entityId) return;
+    if (entityId) { setSwitchBlocked(true); return; }
     setEntityId(id);
+    setEntityLabel(entities.find(e => e.entity_id === id)?.label ?? null);
     conversationId.current = null;
     setTurns([]);
     setSelectedId(null);
@@ -133,19 +185,43 @@ export default function Workbench() {
       <section aria-label="Conversation"
         className="flex min-h-0 flex-col border-b border-line lg:border-b-0 lg:border-r">
         {entities.length > 0 && (
-          <div className="flex items-center gap-2 border-b border-line px-4 py-2">
+          <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2">
             <label htmlFor="entity" className="text-[11px] uppercase tracking-wide text-muted">Entity</label>
-            <select id="entity" value={entityId ?? ''} disabled={busy}
-              onChange={e => changeEntity(e.target.value)}
-              className="num rounded-sm border border-line bg-surface px-2 py-1 font-mono text-[11.5px]
-                         text-ink-2 outline-none focus:border-accent disabled:opacity-60">
-              {entities.map(e => (
-                <option key={e.entity_id} value={e.entity_id}>
-                  {shortEntity(e.entity_id)} · {e.accounts} account{e.accounts === 1 ? '' : 's'}{e.default ? ' · default' : ''}
-                </option>
-              ))}
-            </select>
-            <span className="ml-auto text-[11px] text-muted">Changing the entity starts a new conversation</span>
+            {entityId ? (
+              <>
+                <span className="num rounded-sm border border-line bg-surface px-2 py-1 font-mono
+                                 text-[11.5px] text-ink-2">{entityLabel ?? ''}</span>
+                <button type="button" onClick={() => setSwitchBlocked(true)}
+                  className="text-[11px] text-muted underline-offset-2 hover:text-ink hover:underline">
+                  Change
+                </button>
+                <span className="ml-auto text-[11px] text-muted">Locked for this conversation</span>
+              </>
+            ) : (
+              <>
+                <select id="entity" value="" disabled={busy}
+                  onChange={e => e.target.value && changeEntity(e.target.value)}
+                  className="num max-w-[280px] rounded-sm border border-line bg-surface px-2 py-1
+                             font-mono text-[11.5px] text-ink-2 outline-none focus:border-accent">
+                  <option value="">Select your entity ID…</option>
+                  {entities.map(e => (
+                    <option key={e.entity_id} value={e.entity_id}>
+                      {e.label} · {e.accounts} account{e.accounts === 1 ? '' : 's'}{e.default ? ' · default' : ''}
+                    </option>
+                  ))}
+                </select>
+                <span className="ml-auto text-[11px] text-muted">
+                  {entities.length} entities
+                </span>
+              </>
+            )}
+            {switchBlocked && (
+              <p className="w-full rounded border border-warning/40 bg-warning/[.07] px-3 py-2
+                            text-[12.5px] text-ink-2">
+                This conversation is scoped to {entityLabel}. Clear History first, then select a
+                different entity ID and start chatting.
+              </p>
+            )}
           </div>
         )}
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
@@ -156,7 +232,25 @@ export default function Workbench() {
             </p>
           )}
 
-          {turns.length === 0 && !datasetError && (
+          {turns.length === 0 && !datasetError && !entityId && entityReady && (
+            <div className="space-y-3">
+              <h1 className="text-[18px] font-semibold leading-tight tracking-tight">
+                Pick an entity to begin.
+              </h1>
+              <p className="text-[12.5px] leading-6 text-ink-2">
+                Every answer is scoped to one entity, so choose your entity ID from the
+                dropdown above and then ask your question. A conversation stays with the
+                entity it starts on; to use a different one, clear the history and pick again.
+              </p>
+              {entities.length === 0 && (
+                <p className="text-[12.5px] text-critical">
+                  No entities are available. Is the dataset loaded?
+                </p>
+              )}
+            </div>
+          )}
+
+          {turns.length === 0 && !datasetError && entityId && (
             <div className="space-y-4">
               <div className="space-y-2">
                 <h1 className="text-[18px] font-semibold leading-tight tracking-tight">
@@ -301,7 +395,7 @@ export default function Workbench() {
               className="border-t border-line bg-bg px-4 py-3">
           <div className="flex items-end gap-2">
             <label htmlFor="q" className="sr-only">Your question</label>
-            <textarea id="q" value={input} rows={2} disabled={busy}
+            <textarea id="q" value={input} rows={2} disabled={busy || !entityId}
               onChange={e => {
                 setInput(e.target.value);
                 e.target.style.height = 'auto';
@@ -310,12 +404,14 @@ export default function Workbench() {
               onKeyDown={e => {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(input); }
               }}
-              placeholder="Ask about transactions, counterparties, accounts or balance. Shift+Enter for a new line."
+              placeholder={entityId
+                ? 'Ask about transactions, counterparties, accounts or balance. Shift+Enter for a new line.'
+                : 'Select your entity ID above to start asking.'}
               className="min-h-[64px] flex-1 resize-none rounded border border-line bg-surface px-3 py-2.5
                          text-[13px] leading-5 text-ink outline-none transition-colors
                          placeholder:text-muted focus:border-accent disabled:opacity-60" />
             <ModelPicker value={model} onChange={setModel} disabled={busy} />
-            <button type="submit" disabled={busy || !input.trim()} aria-label="Send question"
+            <button type="submit" disabled={busy || !input.trim() || !entityId} aria-label="Send question"
               className="grid h-[42px] w-[42px] place-items-center rounded bg-accent text-accent-ink
                          transition-transform active:scale-[.97] disabled:opacity-40">
               {busy ? <CircleNotch size={16} weight="bold" aria-hidden className="spin" />

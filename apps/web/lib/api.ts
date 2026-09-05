@@ -141,6 +141,13 @@ export async function initializeSource(token: string): Promise<{ started: boolea
   return r.json();
 }
 
+/** Hand the chatbot back to the bundled dataset; the ingested one is left in place. */
+export async function resetSource(): Promise<{ reset: boolean; active_database: string }> {
+  const r = await fetch(`${BASE}/api/v1/sources/reset`, { method: 'POST' });
+  if (!r.ok) throw new Error(await readError(r));
+  return r.json();
+}
+
 export async function getSourceStatus(): Promise<SourceStatus> {
   const r = await fetch(`${BASE}/api/v1/sources/status`, { cache: 'no-store' });
   if (!r.ok) throw new Error(`source status unavailable (${r.status})`);

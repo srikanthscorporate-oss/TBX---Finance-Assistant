@@ -33,12 +33,14 @@ from app.agents.pipeline import ConversationState, Pipeline  # noqa: E402
 from app.contracts.enums import ResponseState  # noqa: E402
 from app.contracts.response import AssistantResponse  # noqa: E402
 from app.llm.router import ModelRouter  # noqa: E402
+from app.services import entity_token  # noqa: E402
 
 ACCOUNTS = load_accounts()
 BANKS = load_banks()
 TXNS = load_transactions(ACCOUNTS)
 ENTITY = default_entity(TXNS)
 ACCOUNT_NUMBERS = {a["account_number"] for a in ACCOUNTS.values()}
+ENTITY_TOKEN = entity_token.encode(ENTITY)
 
 failures: list[str] = []
 responses: list[AssistantResponse] = []
@@ -56,7 +58,8 @@ def build() -> Pipeline:
 
 
 def ask(pipe: Pipeline, question: str, state: ConversationState) -> AssistantResponse:
-    r = pipe.run(question, state)
+    """Every turn carries the entity token: nothing is answered before an entity is chosen."""
+    r = pipe.run(question, state, entity_id=ENTITY_TOKEN)
     responses.append(r)
     print(f"Q: {question}\n   state={r.state.value}"
           + (f"\n   A: {r.answer}" if r.answer else "")
@@ -93,11 +96,22 @@ def main() -> int:
           str(r.clarification and [o.value for o in r.clarification.options]))
     check("clarification carries no evidence", r.evidence is None and r.answer is None)
     r = resolve(pipe, "last_month", st)
-    check("chosen period answers", r.state is ResponseState.ANSWER, r.message or "")
+    check("period chosen, the side is asked next",
+          r.state is ResponseState.CLARIFICATION_REQUIRED
+          and r.clarification is not None and r.clarification.field == "transaction_type",
+          r.message or (r.clarification.field if r.clarification else ""))
+    check("three side options debit / credit / both",
+          r.clarification is not None
+          and sorted(o.value for o in r.clarification.options) == ["both", "credit", "debit"],
+          str(r.clarification and [o.value for o in r.clarification.options]))
+    r = resolve(pipe, "debit", st)
+    check("chosen period and side answer", r.state is ResponseState.ANSWER, r.message or "")
     if r.state is ResponseState.ANSWER:
         ev = r.evidence
         check("detail answer has records", bool(ev.records) and bool(ev.record_columns))
         check("every record is under 500", all(rec["amount"] <= 500 for rec in ev.records))
+        check("every record is a debit", all(rec["transaction_type"] == "debit" for rec in ev.records),
+              str({rec["transaction_type"] for rec in ev.records}))
         keys = {f.key for f in ev.facts}
         check("facts include count and record_count", {"count", "record_count"} <= keys, str(keys))
         check("records are masked accounts", all(re.fullmatch(r"X{6}\d{4}", rec["account"])
@@ -114,8 +128,21 @@ def main() -> int:
     check("two options SWIGGY / SWIGGY INSTAMART", sorted(opts) == ["SWIGGY", "SWIGGY INSTAMART"], str(opts))
     check("options carry hints", bool(r.clarification) and all(o.hint for o in r.clarification.options))
     r = resolve(pipe, "SWIGGY", st)
-    check("chosen counterparty answers", r.state is ResponseState.ANSWER, r.message or "")
+    check("counterparty chosen, the period is asked next",
+          r.state is ResponseState.CLARIFICATION_REQUIRED
+          and r.clarification is not None and r.clarification.field == "date_range",
+          r.message or (r.clarification.field if r.clarification else ""))
+    r = resolve(pipe, "all_time", st)
+    check("period chosen, the side is asked next",
+          r.state is ResponseState.CLARIFICATION_REQUIRED
+          and r.clarification is not None and r.clarification.field == "transaction_type",
+          r.message or (r.clarification.field if r.clarification else ""))
+    r = resolve(pipe, "both", st)
+    check("counterparty, period and side chosen: answers",
+          r.state is ResponseState.ANSWER, r.message or "")
     if r.state is ResponseState.ANSWER:
+        check("choosing 'both' applies no side filter",
+              r.plan.transaction_type is None and r.plan.include_both_types is True)
         expected = sum(1 for t in TXNS if t.entity_id == ENTITY and t.counterparty == "SWIGGY")
         fact = r.evidence.fact_map().get("count")
         check("SWIGGY count matches the CSV", fact is not None and int(fact.value) == expected,

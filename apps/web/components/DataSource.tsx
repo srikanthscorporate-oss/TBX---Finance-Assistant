@@ -4,9 +4,11 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ArrowRight, CheckCircle, CircleNotch, Database, LinkSimple, Plugs, WarningOctagon,
+  ArrowRight, ArrowsClockwise, CheckCircle, CircleNotch, Database, LinkSimple, Plugs, WarningOctagon,
 } from '@phosphor-icons/react';
-import { getSourceStatus, initializeSource, validateSource, type ConnectionForm } from '@/lib/api';
+import {
+  getSourceStatus, initializeSource, resetSource, validateSource, type ConnectionForm,
+} from '@/lib/api';
 import type { IngestProgress, SourceStatus, SourceTableMapping, ValidateResult } from '@/lib/types';
 import { Panel, PanelHead, StatusPill } from './ui';
 
@@ -161,6 +163,7 @@ export default function DataSource({ initialStatus }: { initialStatus: SourceSta
   const [status, setStatus] = useState<SourceStatus | null>(initialStatus);
   const [starting, setStarting] = useState(false);
   const [redirecting, setRedirecting] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const redirectedRef = useRef(false);
   const router = useRouter();
@@ -218,12 +221,30 @@ export default function DataSource({ initialStatus }: { initialStatus: SourceSta
     setError(null);
     try {
       const r = await initializeSource(result.token);
-      setStatus(s => s ? { ...s, progress: r.status } : { progress: r.status, active_source: null, dataset: null, chat_ready: false });
+      setStatus(s => s
+        ? { ...s, progress: r.status }
+        : { progress: r.status, active_source: null, active_database: '', bundled: true,
+            dataset: null, chat_ready: false });
       poll();
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setStarting(false);
+    }
+  };
+
+  const useBundled = async () => {
+    setResetting(true);
+    setError(null);
+    try {
+      await resetSource();
+      setStatus(await getSourceStatus());
+      redirectedRef.current = false;
+      setRedirecting(false);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -294,8 +315,9 @@ export default function DataSource({ initialStatus }: { initialStatus: SourceSta
           <div className="space-y-3 px-4 py-3">
             <p className="text-[12px] leading-5 text-ink-2">
               Loads the endpoint&rsquo;s tables into the assistant&rsquo;s verified store and makes them the
-              dataset the chatbot answers from. This <strong>replaces</strong> the dataset currently loaded.
-              Sensitive fields are encrypted on the way in; the endpoint itself is only ever read.
+              dataset the chatbot answers from. They go into a <strong>separate database</strong>, so the
+              bundled demo dataset stays intact and you can switch back at any time. Sensitive fields are
+              encrypted on the way in; the endpoint itself is only ever read.
             </p>
             {result?.mapping && !result.mapping.ready && (
               <ul className="space-y-1 text-[12px] leading-5 text-critical">
@@ -328,12 +350,32 @@ export default function DataSource({ initialStatus }: { initialStatus: SourceSta
           )}
         </Panel>
 
-        {status?.active_source && progress?.state !== 'ready' && (
+        {status && (
           <Panel>
-            <PanelHead title="Active source" />
-            <p className="px-4 py-3 font-mono text-[12px] text-ink-2">
-              {status.active_source.user}@{status.active_source.host}:{status.active_source.port}/{status.active_source.database}
-            </p>
+            <PanelHead title="Active dataset"
+              meta={status.bundled ? 'bundled demo data' : 'your endpoint'} />
+            <div className="space-y-2 px-4 py-3">
+              <p className="font-mono text-[12px] text-ink-2">
+                {status.active_source
+                  ? `${status.active_source.user}@${status.active_source.host}:${status.active_source.port}/${status.active_source.database}`
+                  : 'bundled dataset'}
+                {status.active_database && <span className="text-muted"> &rarr; {status.active_database}</span>}
+              </p>
+              {status.dataset && (
+                <p className="text-[11px] leading-4 text-muted">
+                  {status.dataset.dataset_version} · {status.dataset.min_date} &rarr; {status.dataset.max_date} ·{' '}
+                  {status.dataset.accounts.toLocaleString()} accounts
+                </p>
+              )}
+              {!status.bundled && (
+                <button type="button" onClick={useBundled} disabled={resetting || running}
+                  className="inline-flex h-[30px] items-center gap-1.5 rounded border border-line bg-raised px-2.5
+                             text-[12px] text-ink transition-colors hover:border-accent disabled:opacity-40">
+                  {resetting ? <CircleNotch size={13} className="spin" aria-hidden /> : <ArrowsClockwise size={13} aria-hidden />}
+                  Use the bundled dataset
+                </button>
+              )}
+            </div>
           </Panel>
         )}
       </div>

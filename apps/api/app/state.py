@@ -15,6 +15,7 @@ from .services.cache import Cache
 from .config.settings import settings
 from .db.clickhouse import ClickHouseClient
 from .llm.router import ModelRouter
+from .services.active_db import active_db, reset_active_db, set_active_db
 from .services.dates import DatasetCalendar
 from .services.ingest import IngestRunner
 from .services.mysql_source import MySQLTarget
@@ -141,38 +142,39 @@ MAX_COUNTERPARTIES = int(os.getenv("TBX_MAX_COUNTERPARTIES", "5000"))
 def build_dataset_context(ch: ClickHouseClient) -> DatasetContext:
     """Read bounds, counterparties, accounts, banks and entities from ClickHouse so date
     resolution and name matching follow the loaded data."""
+    db = active_db()
     bounds = ch.query(
         "SELECT min(txn_date) AS lo, max(txn_date) AS hi, count() AS n "
-        "FROM tbx_finance.transaction").rows[0]
+        f"FROM {db}.transaction").rows[0]
     if not bounds or int(bounds.get("n", 0)) == 0:
         raise RuntimeError("no transactions loaded; run scripts/load_dataset.py first")
 
     banks = {r["bank_code"]: r["bank_name"] for r in
-             ch.query("SELECT bank_code, bank_name FROM tbx_finance.bank FINAL").rows}
+             ch.query(f"SELECT bank_code, bank_name FROM {db}.bank FINAL").rows}
     accounts = [
         AccountRecord(r["account_id"], r["entity_id"], r["account_last4"], r["bank_code"],
                       banks.get(r["bank_code"], r["bank_code"]), int(r["program_id"]),
                       float(r["available_balance"]))
         for r in ch.query(
             "SELECT account_id, entity_id, account_last4, bank_code, program_id, "
-            "available_balance FROM tbx_finance.account FINAL").rows
+            f"available_balance FROM {db}.account FINAL").rows
     ]
     counterparties = [
         CounterpartyRecord(r["counterparty"], int(r["n"]), r["channel"],
                            frozenset(r["entities"]))
         for r in ch.query(
             "SELECT counterparty, count() AS n, topK(1)(channel)[1] AS channel, "
-            "groupUniqArray(entity_id) AS entities FROM tbx_finance.transaction "
+            f"groupUniqArray(entity_id) AS entities FROM {db}.transaction "
             "WHERE counterparty != '' GROUP BY counterparty ORDER BY n DESC "
             "LIMIT {lim:UInt32}", {"lim": MAX_COUNTERPARTIES}).rows
     ]
     entity_rows = ch.query(
-        "SELECT entity_id, count() AS n FROM tbx_finance.transaction "
+        f"SELECT entity_id, count() AS n FROM {db}.transaction "
         "GROUP BY entity_id ORDER BY n DESC").rows
     entities = [r["entity_id"] for r in entity_rows]
     default_entity = os.getenv("TBX_DEFAULT_ENTITY") or (entities[0] if entities else None)
     version_rows = ch.query(
-        "SELECT dataset_version FROM tbx_finance.dataset_versions "
+        f"SELECT dataset_version FROM {db}.dataset_versions "
         "ORDER BY loaded_at DESC LIMIT 1").rows
     version = version_rows[0]["dataset_version"] if version_rows else settings.dataset_version
     log.info("dataset %s: %s..%s, %s transactions, %d accounts, %d counterparties, %d entities",
@@ -200,6 +202,48 @@ def rebuild_dataset_context() -> None:
     app_state.conversations.clear()
 
 
+SOURCE_KEY = "active"
+"""Cache slot holding which database the assistant is answering from, so a restart
+does not silently fall back to the bundled dataset while the ingested one is live.
+Only the non-secret connection identity is stored; the password never is."""
+
+
+def save_active_source(target, db: str) -> None:
+    if not app_state.cache:
+        return
+    app_state.cache.set_json("source", SOURCE_KEY, ttl=None,
+                             value={"db": db, "target": target.public() if target else None})
+
+
+def restore_active_source() -> None:
+    """Re-point at the ingested database if one was active before the restart."""
+    if not app_state.cache:
+        return
+    doc = app_state.cache.get_json("source", SOURCE_KEY)
+    if not doc or not doc.get("db"):
+        return
+    try:
+        set_active_db(doc["db"])
+    except Exception as e:  # noqa: BLE001 -- a bad stored name must not stop startup
+        log.warning("ignoring stored data source (%s); using the bundled dataset", e)
+        reset_active_db()
+        return
+    t = doc.get("target") or {}
+    if t:
+        app_state.source = MySQLTarget(host=t.get("host", ""), port=int(t.get("port") or 3306),
+                                       database=t.get("database", ""), user=t.get("user", ""))
+    log.info("restored data source: database %s", active_db())
+
+
+def clear_active_source() -> None:
+    """Back to the bundled dataset."""
+    reset_active_db()
+    app_state.source = None
+    if app_state.cache:
+        app_state.cache.set_json("source", SOURCE_KEY, ttl=None,
+                                 value={"db": settings.ch_db, "target": None})
+
+
 def startup() -> None:
     """Build the singletons; a non-compliant configured model stops the service here."""
     ch = ClickHouseClient(
@@ -210,7 +254,19 @@ def startup() -> None:
         raise RuntimeError(f"ClickHouse unreachable at {settings.ch_host}:{settings.ch_port}")
 
     app_state.ch = ch
-    app_state.ctx = build_dataset_context(ch)
+    # The cache comes first: it holds which database a previous run left active,
+    # and that decides which tables the context below is read from.
+    app_state.cache = Cache(settings.redis_url)
+    restore_active_source()
+    try:
+        app_state.ctx = build_dataset_context(ch)
+    except Exception:
+        if active_db() == settings.ch_db:
+            raise
+        log.warning("ingested database %s is unreadable; falling back to the bundled dataset",
+                    active_db())
+        clear_active_source()
+        app_state.ctx = build_dataset_context(ch)
 
     completion_fn = None
     if os.getenv("TBX_USE_STUB_LLM") == "1":
@@ -220,7 +276,6 @@ def startup() -> None:
         completion_fn = stub_completion
         log.warning("TBX_USE_STUB_LLM=1 -- using the offline stub planner, NOT a real model")
 
-    app_state.cache = Cache(settings.redis_url)
     app_state.judge = Judge(app_state.cache, app_state.ctx.dataset_version)
     router = ModelRouter(completion_fn=completion_fn, timeout=settings.llm_timeout,
                          judge=app_state.judge)

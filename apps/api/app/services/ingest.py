@@ -26,6 +26,7 @@ from typing import Any
 
 from ..config.settings import settings
 from . import mysql_source as ms
+from .active_db import check_name, source_db_name
 from .crypto import FieldCipher
 from .narration import parse_narration
 from .source_mapping import DEFAULTS, SourceMapping, TableMapping
@@ -172,7 +173,9 @@ class Ingestor:
                  db: str | None = None, on_progress: Callable[[], None] | None = None):
         self.target = target
         self.mapping = mapping
-        self.db = db or settings.ch_db
+        # A sibling of the bundled database, never the bundled one: the test suite
+        # and every verify gate recompute the bundled tables from data/raw.
+        self.db = check_name(db) if db else source_db_name()
         self.progress = IngestProgress()
         self.cipher = FieldCipher.from_env()
         self.on_progress = on_progress
@@ -203,6 +206,9 @@ class Ingestor:
             ch.execute(f"CREATE DATABASE IF NOT EXISTS {self.db}")
             for stmt in _schema_statements():
                 ch.execute(stmt.replace("tbx_finance", self.db))
+            # The query path connects as the read-only agent user, which is granted
+            # the bundled database only; a sibling needs its own SELECT grant.
+            ch.execute(f"GRANT SELECT ON {self.db}.* TO tbx_readonly")
 
             conn = ms.connect(self.target)
             try:
