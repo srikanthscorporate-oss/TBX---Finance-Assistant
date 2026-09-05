@@ -27,19 +27,20 @@ CONVERSATION_TTL = int(os.getenv("SESSION_TTL_SECONDS", "14400"))
 
 @dataclass
 class AppState:
+    """Process singletons. `usage_log` is a ring buffer of per-run accounting for /admin/usage."""
     ch: ClickHouseClient | None = None
     router: ModelRouter | None = None
     ctx: DatasetContext | None = None
     cache: Cache | None = None
     judge: Judge | None = None
     conversations: dict[str, ConversationState] = field(default_factory=dict)
-    # Ring buffer of per-run accounting. Feeds /admin/usage, which is how the
-    # model-efficiency claims are evidenced rather than asserted.
     usage_log: list[dict] = field(default_factory=list)
     max_usage_log: int = 2000
     _lock: Lock = field(default_factory=Lock)
 
     def record_run(self, response) -> None:
+        """Append run accounting; other_ms covers resolution, compilation, verification and
+        composition."""
         from datetime import datetime, timezone
         calls = response.model_usage or []
         llm_ms = round(sum(c.get("duration_ms", 0) for c in calls), 1)
@@ -51,8 +52,6 @@ class AppState:
                 "run_id": response.run_id,
                 "state": response.state.value,
                 "duration_ms": total,
-                # Where the time went. "other" is resolution, compilation,
-                # verification and composition glue; it should stay small.
                 "llm_ms": llm_ms,
                 "query_ms": round(query_ms, 1),
                 "other_ms": round(max(0.0, total - llm_ms - query_ms), 1),
@@ -73,9 +72,8 @@ class AppState:
         assert self.ready, "app state not initialised"
         return Pipeline(self.ch, self.router, self.ctx, on_event=on_event, judge=self.judge)
 
-    # Conversation state lives in Redis (survives restarts, shared across
-    # replicas) with the in-memory dict as the fallback when Redis is down.
     def conversation(self, conversation_id: str) -> ConversationState:
+        """Conversation state lives in Redis, with the in-memory dict as the fallback."""
         with self._lock:
             st = self.conversations.get(conversation_id)
             if st is not None:
@@ -110,11 +108,8 @@ app_state = AppState()
 
 
 def build_dataset_context(ch: ClickHouseClient) -> DatasetContext:
-    """Read the dataset's own bounds, vendor list and categories from ClickHouse.
-
-    Loading these from the database (not a config file) is what keeps date
-    resolution anchored to whatever data is actually loaded.
-    """
+    """Read bounds, vendors, categories and currency from ClickHouse so date
+    resolution follows the loaded data."""
     bounds = ch.query(
         "SELECT min(txn_date) AS lo, max(txn_date) AS hi, count() AS n "
         "FROM tbx_finance.transactions").rows[0]
@@ -151,6 +146,7 @@ def build_dataset_context(ch: ClickHouseClient) -> DatasetContext:
 
 
 def startup() -> None:
+    """Build the singletons; a non-compliant configured model stops the service here."""
     ch = ClickHouseClient(
         host=settings.ch_host, port=settings.ch_port, user=settings.ch_user,
         password=settings.ch_password, database=settings.ch_db,
@@ -163,7 +159,6 @@ def startup() -> None:
 
     completion_fn = None
     if os.getenv("TBX_USE_STUB_LLM") == "1":
-        # Offline demo mode: lets the whole product be shown without an API key.
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
         from stub_llm import stub_completion  # type: ignore
@@ -174,8 +169,6 @@ def startup() -> None:
     app_state.judge = Judge(app_state.cache, app_state.ctx.dataset_version)
     router = ModelRouter(completion_fn=completion_fn, timeout=settings.llm_timeout,
                          judge=app_state.judge)
-    # Enforce the 20B ceiling at startup. A refusal here is deliberate: a
-    # non-compliant model should stop the service, not quietly serve answers.
     if completion_fn is None:
         from .llm.catalog import check_compliance
         for warning in check_compliance(router.configured_models()):

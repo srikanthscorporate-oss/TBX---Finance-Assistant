@@ -1,10 +1,7 @@
-"""Relevance gate: is this input about the financial records at all?
+"""Token-free relevance gate run before any agent.
 
-Runs before any agent exists and costs no tokens. It is deliberately generous:
-one recognisable signal (a money word, a period word, a vendor or category
-name, a currency symbol or a number) is enough to let the planner decide. Only
-input with NO such signal is refused here. The planner remains the second gate
-for questions that are financial but unanswerable from the schema.
+One signal (money word, period word, vendor or category name, currency symbol or number)
+is enough to pass; the planner remains the second gate.
 """
 from __future__ import annotations
 

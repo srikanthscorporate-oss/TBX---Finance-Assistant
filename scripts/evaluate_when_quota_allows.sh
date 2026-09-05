@@ -1,23 +1,16 @@
 #!/usr/bin/env bash
-# Run the golden evaluation only when the model provider is actually answering.
-#
-# A rolling trip counter is not a quota signal (it expires on its own clock).
-# This probes with ONE real request, requires it to succeed twice a few minutes
-# apart, then runs the evaluation; if the run still comes back throttled it
-# backs off and tries again, up to a limit. Then it refreshes the docs and
-# records the gate ledger in the same shell so approvals bind.
+# Runs the golden evaluation once a real probe request succeeds twice a few minutes apart,
+# backing off when the run still comes back throttled. Gate approval runs in the same shell.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 export TBX_API="${TBX_API:-http://127.0.0.1:8010}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-8}"
-# Groq's free tier allows 8,000 tokens per minute on gpt-oss-20b, refilled
-# continuously at about 133 tokens a second. A turn bursts roughly 3,300
-# tokens across its calls in a few seconds, so the bucket needs about 25
-# seconds to recover before the next turn or the primary trips its breaker
-# and the weaker alternate answers instead. The pace keeps the run clean.
+# Groq free tier: 8,000 tokens/min on gpt-oss-20b; a turn bursts about 3,300 tokens,
+# so about 25 s between turns keeps the primary's breaker from tripping.
 export EVAL_PACE_S="${EVAL_PACE_S:-24}"
 
-probe() {   # 0 when a real model call succeeded (a nonce defeats the answer cache)
+# Returns 0 when a real model call succeeded; the nonce defeats the answer cache.
+probe() {
   curl -sS -m 60 -X POST "$TBX_API/api/v1/chat" -H 'content-type: application/json' \
     -d "{\"message\":\"How many transactions were there last month? (probe $RANDOM$RANDOM)\",\"model\":\"auto\"}" \
   | python3 -c 'import json,sys; r=json.load(sys.stdin); ok=any(u.get("ok") for u in r.get("model_usage",[])); sys.exit(0 if ok and "rate limited" not in (r.get("message") or "").lower() else 1)'

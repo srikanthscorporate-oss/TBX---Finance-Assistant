@@ -1,21 +1,10 @@
 """Provider-agnostic model routing.
 
-Policy, per Section 7 of the problem statement ("lowest possible model, highest
-possible accuracy"; 20B ceiling; larger-by-default is scored down):
-
-  * AUTO mode uses the smallest verified model in the catalog as PRIMARY.
-  * A measured failure (invalid plan, rejected draft) is retried on the SAME
-    model with corrective feedback, then on a different compliant ALTERNATE.
-    There is no escalation to a larger model, anywhere. Going bigger is not a
-    recovery strategy under this constraint.
-  * Transport failure (429, 5xx, timeout) falls through to the other configured
-    providers so an outage does not fail the request.
-  * A PINNED model (chosen from the dropdown) is honoured exactly: retries stay
-    on that model and there is no silent switch. If it cannot answer, the user
-    is told that model could not, rather than being answered by another.
-
-Every call is recorded so switch rate, tokens and cost per query are reported.
-That reporting is the deliverable for the efficiency criterion.
+Auto mode starts on the smallest verified catalog model. A measured failure
+retries the same model with feedback, then a different compliant model; nothing
+escalates to a larger one. Transport failures fall through to the other
+configured providers. A pinned model is honoured exactly, with no silent switch.
+Every call is recorded for the usage report.
 """
 from __future__ import annotations
 
@@ -32,11 +21,13 @@ from .catalog import CatalogModel
 
 
 class Tier(str, Enum):
-    PRIMARY = "primary"        # auto-mode default, smallest verified model
-    ALTERNATE = "alternate"    # a different compliant model, after measured failure
-    FALLBACK = "fallback"      # another provider, for transport failure
-    REGIONAL = "regional"      # Sarvam, once its key is present
-    PINNED = "pinned"          # user chose it from the dropdown
+    """PRIMARY and ALTERNATE are the auto-mode pair, FALLBACK and REGIONAL other
+    providers, PINNED a dropdown choice."""
+    PRIMARY = "primary"
+    ALTERNATE = "alternate"
+    FALLBACK = "fallback"
+    REGIONAL = "regional"
+    PINNED = "pinned"
 
 
 @dataclass
@@ -119,7 +110,6 @@ def default_registry() -> dict[Tier, ModelSpec]:
         override = _env_model(env_name)
         entry = catalog.by_id(override) if override else fallback
         if override and entry is None:
-            # Surface it through the compliance check rather than here.
             return ModelSpec(tier=tier, model=override, api_key_env="")
         return ModelSpec.from_catalog(tier, entry) if entry else None
 
@@ -144,11 +134,7 @@ class NoProviderConfigured(RuntimeError):
 
 
 class AllModelsRateLimited(RuntimeError):
-    """Every candidate model was throttled by its provider.
-
-    Distinct from a planning failure so the user is told the truth: nothing
-    was wrong with the question, the providers are out of quota for a while.
-    """
+    """Every candidate model was throttled; distinct from a planning failure so the user is told."""
 
     def __init__(self, retry_after_s: int, models: list[str]):
         self.retry_after_s = retry_after_s
@@ -156,11 +142,8 @@ class AllModelsRateLimited(RuntimeError):
         super().__init__(f"rate limited on {', '.join(models)}; retry in {retry_after_s}s")
 
 
-# Provider rate limits clear in seconds. Falling through to a weaker model the
-# instant a 429 arrives trades a short wait for a worse answer, so the SAME
-# model is retried after a bounded pause first. The pause honours the
-# provider's retry-after hint when it gives one.
 RATE_LIMIT_RETRIES = int(os.getenv("LLM_RATE_LIMIT_RETRIES", "2"))
+"""Same-model retries on a 429 before falling through; the pause honours the retry-after hint."""
 RATE_LIMIT_MAX_WAIT_S = float(os.getenv("LLM_RATE_LIMIT_MAX_WAIT_S", "20"))
 _RETRY_AFTER_RE = re.compile(r"try again in (?:(\d+)m)?\s*([\d.]+)s", re.I)
 
@@ -180,22 +163,16 @@ def _retry_after_seconds(err: Exception, attempt: int) -> float:
 
 
 class ModelRouter:
-    """Thin wrapper over LiteLLM.
-
-    `completion_fn` is injectable so the pipeline is testable without a network
-    or an API key -- the offline stub in tests/ implements the same signature.
-    """
+    """Thin wrapper over LiteLLM; `completion_fn` is injectable so tests run without a key."""
 
     def __init__(self, registry: dict[Tier, ModelSpec] | None = None,
                  completion_fn: Callable[..., Any] | None = None,
                  timeout: int = 20, judge: Any | None = None):
+        """An injected completion function means offline mode: no keys are checked
+        and the stub gets a primary and an alternate so the retry path runs."""
         self.timeout = timeout
         self._completion = completion_fn
-        # Optional: consulted for circuit breakers and to report 429s.
         self.judge = judge
-        # An injected completion function means offline mode (tests, stub
-        # demo): no provider keys exist, so gate on nothing and give the stub a
-        # primary and an alternate so the retry path is exercised too.
         self.offline = completion_fn is not None
         if registry is not None:
             self.registry = registry
@@ -231,7 +208,7 @@ class ModelRouter:
         if self._completion is not None:
             return self._completion
         try:
-            from litellm import completion  # imported lazily; heavy
+            from litellm import completion
         except ImportError as e:  # pragma: no cover
             raise NoProviderConfigured("litellm is not installed") from e
         self._completion = completion
@@ -243,9 +220,10 @@ class ModelRouter:
              pinned: ModelSpec | None = None, prefer: str | None = None) -> str:
         """One completion.
 
-        With `pinned`, only that model is tried. Otherwise the requested tier is
-        tried first and transport failures fall through to the other configured
-        providers. Nothing here ever selects a larger model.
+        With `pinned`, only that model is tried. Otherwise the tier goes first,
+        transport failures fall through to the other configured providers, and
+        the judge's preferred model is moved to the front. Models with an open
+        breaker are skipped; if none remain the call raises instead of waiting.
         """
         if pinned is not None:
             order: list[ModelSpec] = [pinned]
@@ -254,14 +232,8 @@ class ModelRouter:
             for alt in (Tier.FALLBACK, Tier.REGIONAL, Tier.ALTERNATE):
                 if alt is not tier and self.available(alt):
                     order.append(self.registry[alt])
-            # The judge may ask for a different model first (rate-limited
-            # primary, or a better recent validity rate). Still never larger.
             if prefer:
                 order.sort(key=lambda s: 0 if s.model == prefer else 1)
-            # Skip any model whose circuit breaker is open. If that leaves
-            # nothing, do NOT fall back to trying them anyway: a quality-open
-            # model produces plausible wrong refusals, and a rate-limited one
-            # produces a wait. Both are worse than saying so honestly.
             if self.judge is not None:
                 closed = [s for s in order if not self.judge.is_open(s.model)]
                 if not closed:
@@ -290,8 +262,6 @@ class ModelRouter:
                         m = _RETRY_AFTER_RE.search(str(e))
                         longest_wait = max(longest_wait, int((int(m.group(1) or 0) * 60 + float(m.group(2))) if m else 30))
                     if _is_rate_limit(e) and self.judge is not None:
-                        # Tell the judge how long the provider asked for, so
-                        # the NEXT request skips this model instead of waiting.
                         m = _RETRY_AFTER_RE.search(str(e))
                         asked = (int(m.group(1) or 0) * 60 + float(m.group(2))) if m else 30.0
                         self.judge.trip(spec.model, int(min(asked, 900)) + 1)
@@ -309,8 +279,6 @@ class ModelRouter:
                         ok=False, error=str(e)[:200]))
                     break
 
-        # If every model that was tried failed on a rate limit, say so. A
-        # breaker-skipped model counts too: it was skipped BECAUSE of a limit.
         skipped = [s.model for s in ([pinned] if pinned else list(self.registry.values()))
                    if self.judge is not None and self.judge.is_open(s.model)]
         tried = [s.model for s in order]
@@ -323,6 +291,7 @@ class ModelRouter:
     def _one_call(self, spec: ModelSpec, purpose: str, system: str, user: str,
           ledger: UsageLedger, json_mode: bool, max_tokens: int,
           temperature: float, started: float) -> str:
+        """gpt-oss runs at low reasoning effort; the tasks are extraction and templating."""
         completion = self._resolve_completion()
         kwargs: dict[str, Any] = {
             "model": spec.model,
@@ -336,8 +305,6 @@ class ModelRouter:
             kwargs["api_base"] = spec.api_base
         if json_mode and spec.supports_json_mode:
             kwargs["response_format"] = {"type": "json_object"}
-        # Extraction and templating, not puzzles: keep reasoning
-        # minimal so the budget goes to the output.
         if "gpt-oss" in spec.model:
             kwargs["reasoning_effort"] = "low"
 

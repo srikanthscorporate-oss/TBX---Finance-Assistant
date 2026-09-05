@@ -13,7 +13,6 @@ if (!m || m[1] !== m[2]) fail('G10', `crosscheck did not pass all: ${m && m[0]}`
 
 const e2e = run(PY, ['apps/api/tests/e2e_offline.py'], { env });
 if (!e2e.ok) fail('G10', `e2e failed:\n${e2e.out.slice(-1200)}`);
-// Every question in the e2e run must land in a defined state.
 const states = [...e2e.out.matchAll(/state=(\w+)/g)].map(x => x[1]);
 if (states.length < 10) fail('G10', `only ${states.length} e2e scenarios ran`);
 const valid = new Set(['answer','clarification_required','data_unavailable','out_of_scope','error']);

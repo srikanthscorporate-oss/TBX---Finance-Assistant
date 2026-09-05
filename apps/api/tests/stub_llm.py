@@ -1,9 +1,6 @@
-"""A deterministic stand-in for a real LLM.
+"""Deterministic stand-in for the LLM, wired in only by tests and the offline demo.
 
-Lets the full pipeline -- validation, resolution, compilation, execution,
-verification, confidence, composition -- be exercised in CI and before any API
-key exists. It is NOT a fallback for production: it recognises a fixed set of
-phrasings and is only ever wired in by tests and the offline demo.
+It recognises a fixed set of phrasings and is not a production fallback.
 """
 from __future__ import annotations
 
@@ -36,7 +33,7 @@ def stub_completion(*, model: str, messages: list[dict], **kwargs):
 
 
 def _compose_draft(system: str) -> str:
-    # Read the advertised vocabulary only, not every brace pair in the prompt.
+    """Draft prose using only the placeholders the prompt advertises."""
     line = ""
     for ln in system.splitlines():
         if ln.strip().startswith("{{") and "}}," in ln or (
@@ -61,6 +58,11 @@ def _compose_draft(system: str) -> str:
 
 
 def _scope_and_plan(question: str) -> str:
+    """Emit a scope verdict or plan from keyword matching.
+
+    An unknown capitalised name after with/to/for/from is passed through as the vendor so
+    the resolver's NOT_FOUND path is exercised; a matched vendor wins over a category word.
+    """
     q = question.lower()
 
     if any(w in q for w in ("stock price", "weather", "bitcoin", "apple's stock",
@@ -98,16 +100,11 @@ def _scope_and_plan(question: str) -> str:
             vendor = name
             break
     if vendor is None:
-        # A real planner copies whatever name the user wrote; the resolver -- not
-        # the planner -- decides whether it exists. Mimic that here so the
-        # NOT_FOUND path is actually exercised.
         m = re.search(r"\b(?:with|to|for|from)\s+([A-Z][\w&.\-]*(?:\s+[A-Z][\w&.\-]*)*)",
                       question)
         if m and m.group(1).lower() not in ("marketing", "travel", "legal"):
             vendor = m.group(1)
 
-    # A category word inside a matched vendor name ("Vertex Legal") is part of
-    # the vendor, not a category filter. Vendor detection therefore wins.
     category = None
     if vendor is None:
         for cat in ("marketing", "travel", "legal", "logistics", "utilities",

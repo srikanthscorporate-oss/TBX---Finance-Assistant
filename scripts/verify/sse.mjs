@@ -24,19 +24,16 @@ for (const required of ['run_started', 'intent_detected', 'query_executed',
 if (types[0] !== 'run_started') fail('G4', `first event was ${types[0]}`);
 if (types.at(-1) !== 'final') fail('G4', `last event was ${types.at(-1)}, expected final`);
 
-// Sequence numbers must be strictly increasing across agent events.
 const seqs = events.filter(e => e.type !== 'final').map(e => e.data.seq);
 for (let i = 1; i < seqs.length; i++)
   if (seqs[i] <= seqs[i - 1]) fail('G4', `seq not increasing: ${seqs}`);
 
-// verification must be reported before the answer is generated.
 if (types.indexOf('verification_completed') > types.indexOf('answer_generated'))
   fail('G4', 'answer generated before verification completed');
 
 const final = events.at(-1).data;
 if (final.state !== 'answer' || !final.evidence) fail('G4', 'final payload incomplete');
 
-// The timeline must not leak model reasoning.
 if (/chain of thought|reasoning:|let me think/i.test(text))
   fail('G4', 'stream appears to expose model reasoning');
 

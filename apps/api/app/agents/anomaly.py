@@ -1,8 +1,6 @@
-"""Anomaly callout: is this vendor's figure unusual against its own history?
+"""Vendor anomaly callout from a median-and-MAD z-score over the vendor's prior months.
 
-Deterministic and cheap: one extra query for the vendor's monthly totals, a
-median-and-MAD z-score, insensitive to the outlier being tested, and a sentence only when the
-current period stands out. The model never sees or judges the numbers.
+The history query excludes the period under test. No model call.
 """
 from __future__ import annotations
 

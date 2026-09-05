@@ -1,22 +1,8 @@
 """Response composition by placeholder interpolation.
 
-THE CENTRAL GROUNDING MECHANISM.
-
-The composing model is never asked to state a figure. It writes prose containing
-typed placeholders -- {{total}}, {{record_count}}, {{vendor_name}} -- drawn from
-a whitelist we hand it, and the server substitutes the verified values from the
-EvidencePackage *after* generation.
-
-Consequences:
-  * A number the model invented cannot reach the user, because the model has no
-    channel through which to emit one.
-  * A placeholder we never computed fails closed (ComposeError), rather than
-    rendering as literal braces or an empty string.
-  * Any bare digit the model writes anyway is caught by the digit scan and the
-    draft is rejected.
-
-This converts "we check the model's arithmetic" into "the model cannot do
-arithmetic in the first place".
+The composing model writes prose with typed placeholders from a whitelist and
+the server substitutes verified values afterwards. An unknown placeholder or a
+literal figure rejects the draft.
 """
 from __future__ import annotations
 
@@ -27,17 +13,13 @@ from ..contracts.evidence import ComputedFact, EvidencePackage
 
 PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-z][a-z0-9_.]{0,63})\s*\}\}")
 
-# Digits the model is allowed to write literally: ordinals and small counts in
-# prose ("the top 5 vendors") are harmless, but anything that could read as a
-# monetary amount is not. We allow standalone integers 0-99 only when they are
-# not adjacent to a currency symbol or decimal point.
 BARE_NUMBER_RE = re.compile(r"(?<![\w.]) (?:\d{1,3}(?:,\d{3})+ | \d+\.\d+ | \d{3,}) (?![\w])", re.X)
+"""Standalone 0-99 in prose is tolerated; grouped, decimal and 3+ digit numbers are not."""
 CURRENCY_ADJACENT_RE = re.compile(r"[₹$€£¥]\s*\d|\d\s*(?:crore|lakh|million|billion|k\b|m\b|bn\b)", re.I)
 
 
 class ComposeError(ValueError):
-    """The draft cannot be safely rendered. The caller retries once with a
-    corrective instruction, then falls back to a deterministic template."""
+    """The draft cannot be rendered; the caller retries once, then uses the template."""
 
 
 @dataclass
@@ -61,8 +43,11 @@ def allowed_keys(evidence: EvidencePackage) -> list[str]:
 
 
 def render(draft: str, evidence: EvidencePackage, *, strict: bool = True) -> ComposedAnswer:
-    """Substitute verified values into a draft. Raises ComposeError if the draft
-    cites something we did not compute, or writes a figure of its own."""
+    """Substitute verified values into a draft.
+
+    Raises ComposeError for an unknown placeholder, a literal figure, leftover
+    braces (a truncated generation) or a draft that ends mid-sentence.
+    """
     facts = evidence.fact_map()
     values = _value_table(evidence, facts)
 
@@ -89,16 +74,11 @@ def render(draft: str, evidence: EvidencePackage, *, strict: bool = True) -> Com
     if not text:
         raise ComposeError("draft rendered to an empty answer")
 
-    # A truncated generation leaves a dangling "{{" that the placeholder regex
-    # never matched, so it survived substitution and would have been shown to
-    # the user as literal braces. Anything brace-shaped left here means the
-    # draft was malformed: fail closed.
     if "{{" in text or "}}" in text:
         raise ComposeError(
             "draft contains an unterminated placeholder (likely a truncated "
             "generation); rendered text must contain no braces")
 
-    # A sentence that never finished is not an answer.
     if not text.rstrip().endswith((".", "!", "?", "%")):
         raise ComposeError(f"draft ends mid-sentence: {text[-40:]!r}")
 
@@ -134,11 +114,7 @@ def _reject_literal_figures(draft: str) -> None:
 
 
 def deterministic_fallback(evidence: EvidencePackage, question: str | None = None) -> ComposedAnswer:
-    """Template answer used when the composing model fails twice.
-
-    Deliberately plain. A slightly stilted sentence built from verified values
-    beats a fluent one we cannot vouch for.
-    """
+    """Plain template answer used when the composing model fails twice."""
     facts = evidence.facts
     if not facts:
         raise ComposeError("no facts to render")
@@ -173,9 +149,9 @@ def format_percent(value: float) -> str:
     return f"{value:.2f}%".replace(".00%", "%")
 
 
-# Intent-aware sentences for single-figure answers. Every value is a verified
-# fact; the only thing chosen here is the wording. Rendered at zero tokens.
 def template_answer(evidence: EvidencePackage, intent: str) -> ComposedAnswer | None:
+    """Intent-aware sentence for a single-figure answer at zero tokens; only the wording is
+    chosen here."""
     f = evidence.fact_map()
     ent = evidence.entities_resolved
     period = evidence.resolved_period

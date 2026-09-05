@@ -44,9 +44,7 @@ export default function Workbench() {
     setTurns(t => [...t, { id, question: q, events: [], running: true }]);
     setSelectedId(id);
 
-    // Events arrive in bursts (plan, query and verify can complete within a
-    // few ms of each other). Release them one at a time with a minimum dwell,
-    // so exactly one stage is ever "running" and each appears as it starts.
+    // Events arrive in bursts; release them with a minimum dwell so each stage is seen.
     const queue: AgentEvent[] = [];
     let draining = false;
     const DWELL_MS = 320;
@@ -65,7 +63,6 @@ export default function Workbench() {
 
     try {
       const res = await streamChat(q, conversationId.current, onEvent, model, resolvedVendorId);
-      // Let the last queued stages land before the answer replaces the spinner.
       while (queue.length || draining) await new Promise(r => setTimeout(r, 40));
       conversationId.current = res.conversation_id;
       setTurns(t => t.map(x => (x.id === id ? { ...x, response: res, running: false } : x)));
@@ -77,7 +74,6 @@ export default function Workbench() {
     }
   }, [busy, model]);
 
-  // The right pane follows the live run, or whichever turn the user selected.
   const active = useMemo(
     () => turns.find(t => t.id === selectedId) ?? turns[turns.length - 1] ?? null,
     [turns, selectedId],
@@ -88,7 +84,6 @@ export default function Workbench() {
                     grid-rows-[minmax(0,1fr)_minmax(0,1fr)] gap-0
                     lg:grid-cols-[minmax(380px,42%)_1fr] lg:grid-rows-1">
 
-      {/* Conversation ---------------------------------------------------- */}
       <section aria-label="Conversation"
         className="flex min-h-0 flex-col border-b border-line lg:border-b-0 lg:border-r">
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
@@ -224,7 +219,6 @@ export default function Workbench() {
             <textarea id="q" value={input} rows={2} disabled={busy}
               onChange={e => {
                 setInput(e.target.value);
-                // Grow with content, up to about eight lines, then scroll.
                 e.target.style.height = 'auto';
                 e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
               }}
@@ -246,9 +240,6 @@ export default function Workbench() {
         </form>
       </section>
 
-      {/* Live operations -------------------------------------------------- */}
-      {/* The pane itself clips sideways overflow, in every state, so no child
-          can ever widen the page. */}
       <section aria-label="Run details" aria-live="polite"
                className="min-h-0 overflow-x-hidden bg-surface [overflow-wrap:anywhere]">
         <RunPane turn={active} dataset={dataset} />

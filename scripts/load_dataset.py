@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """Load CSVs from data/raw into ClickHouse, with validation and a quality report.
 
-Deliberately schema-driven: the column map below is the contract. When the real
-TBX dataset lands tomorrow, adjust COLUMN_MAP (and only COLUMN_MAP) to match
-their headers -- nothing downstream needs to change.
-
-Refuses to load a file whose required columns are missing, rather than loading
-partial data that would silently produce wrong answers.
+TABLES is the only schema source; a file missing a required column aborts the load.
 """
 from __future__ import annotations
 
@@ -22,9 +17,9 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-DB = "tbx_finance"  # overridden by --db; the scale test loads into a sibling database
+DB = "tbx_finance"
+"""Overridden by --db; the scale test loads into a sibling database."""
 
-# table -> (csv filename, required columns)
 TABLES: dict[str, tuple[str, list[str]]] = {
     "vendors": ("vendors.csv",
                 ["vendor_id", "vendor_name", "legal_name", "category", "status",
@@ -50,22 +45,16 @@ class ClickHouse:
     def __init__(self, url: str, user: str, password: str):
         self.url, self.user, self.password = url.rstrip("/"), user, password
 
-    # Applied to every INSERT. Parallel parsing of a 100k-row chunk plus the
-    # background merges of the tables already loaded exceeded the ClickHouse
-    # container's memory at 20M rows. Serial parsing costs a little speed and
-    # removes the spike; the per-query cap keeps any single insert well under
-    # the server limit.
     INSERT_SETTINGS = {
         "input_format_parallel_parsing": "0",
         "max_insert_threads": "1",
         "max_memory_usage": str(1 * 1024 ** 3),
     }
+    """Serial parsing plus a per-query cap: parallel parsing alongside background merges
+    exceeded the container's memory at 20M rows."""
 
     def execute(self, sql: str, body: bytes | None = None, retries: int = 4) -> str:
-        """Run a statement. Transient transport failures (a dropped connection
-        mid-upload, a broken pipe) are retried with backoff; a 20M-row load
-        should not lose minutes of work to one hiccup. Server-side errors are
-        not retried: they mean the data or the SQL is wrong."""
+        """Run a statement. Transport failures are retried with backoff; server errors are not."""
         qs = {"query": sql}
         if sql.lstrip().upper().startswith("INSERT"):
             qs.update(self.INSERT_SETTINGS)
@@ -89,7 +78,8 @@ class ClickHouse:
         raise RuntimeError("unreachable")
 
 
-CHUNK = 50_000  # rows per INSERT; keeps memory flat at 20M rows
+CHUNK = 50_000
+"""Rows per INSERT."""
 
 
 def check_headers(path: Path, required: list[str]) -> list[str]:
@@ -106,11 +96,10 @@ def check_headers(path: Path, required: list[str]) -> list[str]:
 
 
 def stream_load(ch: "ClickHouse", table: str, path: Path, required: list[str]) -> dict:
-    """Validate and insert in chunks, never holding the file in memory.
+    """Validate and insert in chunks without holding the file in memory.
 
-    Nothing per-row is retained. Duplicate ids are counted in ClickHouse after
-    the load (see `duplicate_ids`): holding 20M id strings in a Python set was
-    several hundred MB and got the process killed on a laptop alongside Docker.
+    Duplicate ids are counted in ClickHouse afterwards (`duplicate_ids`); a Python set of
+    20M ids was several hundred MB.
     """
     headers = check_headers(path, required)
     nulls = {c: 0 for c in required}
@@ -148,29 +137,25 @@ def stream_load(ch: "ClickHouse", table: str, path: Path, required: list[str]) -
 
 
 def reclaim_memory(ch: "ClickHouse") -> None:
-    """Hand retained memory back between large tables.
+    """Purge allocator arenas and caches between large tables.
 
-    A bulk load leaves the allocator holding arenas and the caches full; the
-    next table's first insert then trips the server's total-memory ceiling.
-    Purging is cheap and is the difference between finishing and dying at
-    the last table.
+    Without this the next table's first insert trips the server's total-memory ceiling.
+    Older servers lack JEMALLOC PURGE; the cache drops still help.
     """
     for stmt in ("SYSTEM JEMALLOC PURGE", "SYSTEM DROP MARK CACHE", "SYSTEM DROP UNCOMPRESSED CACHE"):
         try:
             ch.execute(stmt)
         except RuntimeError as e:
-            # Older servers lack JEMALLOC PURGE; the cache drops still help.
             if "JEMALLOC" not in stmt:
                 raise
             print(f"    ({stmt} unsupported: {str(e)[:60]})", flush=True)
 
 
 def wait_for_merges(ch: "ClickHouse", timeout_s: int = 600) -> None:
-    """Block until the database has no background merges in flight.
+    """Block until no background merges are in flight.
 
-    Loading reconciliation while transactions was still merging its 20M rows is
-    what pushed the server over its memory limit. A pause here is cheaper than
-    a crash five minutes into the load.
+    Loading the next table while transactions was still merging 20M rows exceeded the
+    server's memory limit.
     """
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -188,8 +173,10 @@ def duplicate_ids(ch: "ClickHouse", table: str, id_col: str) -> int:
 
 
 def referential_checks(ch: "ClickHouse", loaded: set[str]) -> list[str]:
-    """Orphan detection in SQL. The database already holds every row; asking it
-    is both faster and the only approach that survives 20M records."""
+    """Orphan detection in SQL, which is the only approach that survives 20M records.
+
+    A zero count is serialised as "0" with no trailing tab, so the second column may be absent.
+    """
     problems = []
     checks = [
         ("transactions", "vendor_id", "vendors", "vendor_id"),
@@ -202,8 +189,6 @@ def referential_checks(ch: "ClickHouse", loaded: set[str]) -> list[str]:
             continue
         sql = (f"SELECT count(), any({col}) FROM {DB}.{table} "
                f"WHERE {col} != '' AND {col} NOT IN (SELECT {ref_col} FROM {DB}.{ref})")
-        # A zero count comes back as "0" with an empty second column, which
-        # ClickHouse serialises without a trailing tab. Parse defensively.
         parts = ch.execute(sql).strip().split("\t")
         n = int(parts[0] or 0)
         sample = parts[1] if len(parts) > 1 else ""
@@ -213,11 +198,11 @@ def referential_checks(ch: "ClickHouse", loaded: set[str]) -> list[str]:
     return problems
 
 
-# Columns declared Nullable in the schema. An empty CSV cell must become the
-# TabSeparated NULL marker (\\N); an empty string will not parse as a DateTime.
 NULLABLE_COLUMNS: dict[str, set[str]] = {
     "reconciliation": {"matched_at"},
 }
+"""Columns declared Nullable in the schema; an empty cell becomes the TabSeparated \\N marker
+because an empty string will not parse as a DateTime."""
 
 
 def to_tsv(rows: list[dict], columns: list[str], table: str = "") -> bytes:
@@ -257,8 +242,6 @@ def main() -> int:
     raw = Path(args.raw)
     ch = ClickHouse(args.url, args.user, args.password)
     ch.execute(f"CREATE DATABASE IF NOT EXISTS {DB}")
-    # The DDL names tbx_finance literally; rewrite it for a sibling database so
-    # the same schema lands wherever the load is targeted.
     schema = Path("infra/clickhouse/001_schema.sql").read_text().replace("tbx_finance", DB)
     for stmt in [s.strip() for s in schema.split(";") if s.strip()]:
         ch.execute(stmt)
@@ -291,8 +274,6 @@ def main() -> int:
         if not path.exists():
             print(f"  skip {fname} (not present)")
             continue
-        # Hash in chunks too; reading a 3GB file into memory for a checksum
-        # would defeat the point of streaming the load.
         with path.open("rb") as fh:
             for block in iter(lambda: fh.read(1 << 20), b""):
                 hasher.update(block)

@@ -1,8 +1,4 @@
-"""Read-only browse endpoints and CSV/XLSX export.
-
-Exports go through the SAME compiler and executor as chat, so there is exactly
-one source of financial truth. There is deliberately no second query path here.
-"""
+"""Read-only browse endpoints and CSV export, through the same compiler and executor as chat."""
 from __future__ import annotations
 
 import csv
@@ -38,8 +34,7 @@ async def vendors() -> list[dict[str, Any]]:
 
 @router.get("/dataset")
 async def dataset() -> dict[str, Any]:
-    """The dataset's own bounds. The UI shows these so users know that
-    "last month" is anchored to the data, not to today."""
+    """The dataset's own date bounds; relative periods anchor to these, not to today."""
     _require_ready()
     ctx = app_state.ctx
     return {
@@ -79,11 +74,7 @@ async def export_csv(
     category: str | None = None,
     limit: int = Query(default=1000, ge=1, le=1000),
 ) -> StreamingResponse:
-    """Export the breakdown behind an answer.
-
-    Reuses compile_plan(), so an exported CSV is by construction the same
-    numbers the chat answer was built from.
-    """
+    """Export the breakdown behind an answer, compiled by compile_plan() like the chat path."""
     _require_ready()
     date_range = None
     try:

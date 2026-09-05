@@ -1,14 +1,7 @@
-"""Assembling the evidence package.
+"""Builds the evidence package: facts, breakdown, sample rows, SQL and parameters.
 
-Everything the user needs to check an answer: the computed facts, the breakdown,
-sample source rows, the parameterized SQL and its bound parameters, plus the
-verification result and confidence. Nothing here calls a model.
-
-The fact KEYS matter: they are the vocabulary the composer is allowed to cite,
-so naming one wrongly changes what the model can say. `shown_total` in
-particular exists because a grouped result cut off by the row limit is a
-subtotal, and calling it `total` would let a correct-looking sentence state a
-wrong number.
+Fact keys are the composer's placeholder vocabulary. A grouped result cut off by the row
+limit is keyed `shown_total`, not `total`, because it is a subtotal.
 """
 from __future__ import annotations
 
@@ -79,8 +72,6 @@ class EvidenceBuilder:
             verification=vr,
             dataset_version=self.ctx.dataset_version)
 
-    # -- pieces ------------------------------------------------------------
-
     def _facts(self, plan, cq, aggregate, rows, currency, count) -> list[ComputedFact]:
         facts: list[ComputedFact] = []
 
@@ -107,8 +98,6 @@ class EvidenceBuilder:
 
         elif rows and cq.kind == "grouped":
             total = sum(float(r.get("value") or 0) for r in rows)
-            # A grouped result cut off by the row limit is a SUBTOTAL of the
-            # groups shown, not the total.
             truncated = len(rows) >= plan.limit
             facts.append(ComputedFact(
                 key="shown_total" if truncated else "total",

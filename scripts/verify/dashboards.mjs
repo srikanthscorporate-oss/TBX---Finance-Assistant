@@ -1,5 +1,4 @@
-// G18: the visualisation set exists, uses only palette tokens, and the pages
-// and endpoints that feed it are in place.
+// G18: the chart set exists, uses only palette tokens, and its pages and endpoints are in place.
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, get, pass, fail } from './_lib.mjs';
@@ -8,7 +7,6 @@ const charts = fs.readFileSync(path.join(ROOT, 'apps/web/components/charts.tsx')
 for (const c of ['export function BarSeries', 'export function LineSeries', 'export function RingChart',
                  'export function TimingBar', 'export function Sparkline', 'export function SignalDots'])
   if (!charts.includes(c)) fail('G18', `charts.tsx lacks ${c}`);
-// Colour discipline: no raw hex in chart code; tokens only.
 const hexes = charts.match(/#[0-9a-fA-F]{6}\b/g) || [];
 if (hexes.length) fail('G18', `raw hex colours in charts.tsx: ${[...new Set(hexes)].join(', ')}`);
 if (!/var\(--seq-|var\(--cat-|var\(--good\)|var\(--critical\)/.test(charts)) fail('G18', 'charts do not reference palette tokens');
@@ -17,8 +15,7 @@ for (const c of ['TimingBar', 'SignalDots', 'RingChart']) if (!run.includes(c)) 
 const obs = fs.readFileSync(path.join(ROOT, 'apps/web/components/Observability.tsx'), 'utf8');
 for (const c of ['Sparkline', 'TimingBar', 'BarSeries']) if (!obs.includes(c)) fail('G18', `Observability does not use ${c}`);
 
-// The session sections render only once a run exists, so make one first.
-// Any outcome counts, including a refusal or a quota error: it is a run.
+// The session sections render only once a run exists, so make one first; any outcome counts.
 await fetch(`${ORIGIN}/api/v1/chat`, { method: 'POST', headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ message: 'what is my name?' }) }).catch(() => {});
 const home = await (await fetch(`${ORIGIN}/`)).text();

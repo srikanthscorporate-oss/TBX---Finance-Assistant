@@ -1,19 +1,7 @@
-"""The judge: deterministic scoring that feeds back into routing.
+"""Deterministic judge: plan and answer caches, per-model circuit breaker, model steering
+by recent plan validity, and a per-run score. No model call.
 
-It is NOT another model call. Every run already produces the signals that
-matter (verification, confidence, state, tokens, latency, which model ended up
-answering); the judge turns them into a score, remembers them in Redis, and
-uses them to make the next run cheaper and more likely to succeed:
-
-  * plan cache      an identical question never re-runs the planner (0 tokens)
-  * answer cache    an identical validated plan never re-runs query + compose
-  * circuit breaker a rate-limited model is skipped for as long as the provider
-                    asked, instead of every request paying the wait
-  * model preference in Auto mode, start with whichever compliant model has the
-                    better recent plan-validity rate, so a struggling primary
-                    does not burn a call on every question
-
-Keys carry the dataset version, so a reload invalidates cached answers.
+Cache keys carry the dataset version, so a reload invalidates cached entries.
 """
 from __future__ import annotations
 
@@ -26,16 +14,16 @@ from ..services.cache import Cache
 
 PLAN_TTL = 24 * 3600
 ANSWER_TTL = 3600
-# Bumped when cache semantics change, so stale entries are orphaned rather
-# than served. v2: refusals are no longer cached (see remember_plan).
 CACHE_NS = "v3"
-WINDOW_TTL = 3600           # rolling hour for per-model validity counters
-MIN_SAMPLE = 6              # do not steer on fewer observations than this
-STEER_MARGIN = 0.25         # switch preference only on a clear gap
-# A model that is answering but almost never producing a valid plan is dead
-# weight: each attempt costs calls and ends in the same failure. Below this
-# validity, over at least this many recent plans, it is treated as open.
+"""Bump when cache semantics change. v2 stopped caching refusals."""
+WINDOW_TTL = 3600
+"""Rolling window, in seconds, for per-model validity counters."""
+MIN_SAMPLE = 6
+"""Minimum observations per model before steering between models."""
+STEER_MARGIN = 0.25
+"""Validity-rate gap required to prefer the alternate model."""
 QUALITY_FLOOR = 0.2
+"""A model below this validity rate over QUALITY_SAMPLE recent plans is treated as open."""
 QUALITY_SAMPLE = 12
 
 
@@ -47,20 +35,23 @@ def normalise_question(q: str) -> str:
 
 
 def question_key(q: str, conversation_turn: int) -> str:
-    # A follow-up depends on the previous plan, so it is cached under its turn
-    # position; a first question is context-free and shared across users.
+    """Follow-ups are keyed by turn position; a first question is shared across users."""
     base = normalise_question(q)
     return hashlib.sha256(f"{conversation_turn if conversation_turn else 0}|{base}".encode()).hexdigest()[:20]
 
 
 @dataclass
 class Dispatch:
-    """Which agents this run needs. Anything not needed is not spawned."""
+    """Which agents this run needs.
 
-    planner: str          # cache | full | delta | skip
-    composer: str         # template | llm
+    `planner` is one of cache, full, delta, skip; `composer` is template or llm;
+    `model` is the preferred first model in Auto mode.
+    """
+
+    planner: str
+    composer: str
     anomaly: bool
-    model: str | None     # preferred first model for Auto, or None
+    model: str | None
     reasons: list[str]
 
     def to_dict(self) -> dict[str, Any]:
@@ -68,11 +59,10 @@ class Dispatch:
                 "model": (self.model or "").split("/")[-1] or None, "reasons": self.reasons}
 
 
-# Intents whose single-figure answers a template renders as well as a model.
 TEMPLATE_INTENTS = {"total_spend", "vendor_spend", "category_spend", "account_spend",
                     "vendor_payouts", "unreconciled", "reconciliation_rate",
                     "transaction_lookup", "vendor_lookup", "payout_status"}
-# Intents where a deterministic anomaly check adds real information.
+"""Intents whose single-figure answers are rendered by a template instead of a model."""
 ANOMALY_INTENTS = {"vendor_spend", "vendor_payouts"}
 
 
@@ -105,19 +95,11 @@ class Judge:
         self.c = cache
         self.v = dataset_version
 
-    # -- caches ------------------------------------------------------------
     def cached_plan(self, question: str, turn: int) -> dict | None:
         return self.c.get_json("plan", CACHE_NS, self.v, question_key(question, turn))
 
     def remember_plan(self, question: str, turn: int, parsed: dict) -> None:
-        """Cache only a plan that will actually be executed.
-
-        A model's refusal ("out of scope", "data unavailable") is a judgement
-        that can be wrong, especially from a weak or throttled model, and
-        freezing it for a day turns one bad call into a day of bad answers.
-        Refusals are cheap to recompute; only in-scope, validated plans are
-        worth remembering.
-        """
+        """Cache only in-scope plans; a cached refusal would freeze one bad call for a day."""
         if parsed.get("scope", "in_scope") != "in_scope":
             return
         if not (parsed.get("plan") or parsed.get("delta")):
@@ -130,7 +112,6 @@ class Judge:
     def remember_answer(self, fingerprint: str, payload: dict) -> None:
         self.c.set_json("answer", CACHE_NS, self.v, fingerprint, value=payload, ttl=ANSWER_TTL)
 
-    # -- circuit breaker ---------------------------------------------------
     def trip(self, model: str, seconds: int) -> None:
         self.c.set_flag("breaker", model, ttl=seconds)
         self.c.incr("breaker_trips", model, ttl=WINDOW_TTL)
@@ -144,7 +125,6 @@ class Judge:
     def breaker_ttl(self, model: str) -> int:
         return max(0, self.c.ttl("breaker", model))
 
-    # -- plan validity, per model, rolling window -------------------------
     def record_plan_outcome(self, model: str, valid: bool) -> None:
         self.c.incr("validity", model, "ok" if valid else "fail", ttl=WINDOW_TTL)
 
@@ -167,7 +147,6 @@ class Judge:
                 return alternate
         return primary
 
-    # -- dispatch ----------------------------------------------------------
     def dispatch_planning(self, question: str, turn: int, has_previous: bool,
                           primary: str, alternate: str | None) -> Dispatch:
         """Before planning: cache, delta or full, and which model first."""
@@ -199,7 +178,6 @@ class Judge:
             reasons.append("vendor with a period; anomaly check spawned")
         return Dispatch(planner=d.planner, composer=composer, anomaly=anomaly, model=d.model, reasons=reasons)
 
-    # -- scoring -----------------------------------------------------------
     def score(self, response) -> Verdict:
         ev = response.evidence
         calls = response.model_usage or []
@@ -220,12 +198,10 @@ class Judge:
                 notes.append("blocking verification failed")
         else:
             verified = False
-            # A correct refusal is a good outcome; an error is not.
             s += 0.5 if state in {"clarification_required", "data_unavailable", "out_of_scope"} else 0.0
             if state == "error":
                 notes.append("run errored")
 
-        # Efficiency: two calls and under ~1.5k tokens is the target shape.
         if tokens and tokens <= 1500:
             s += 0.1
         elif tokens > 3000:
@@ -234,7 +210,6 @@ class Judge:
             s += 0.1
         elif switched:
             notes.append("needed a second model")
-        # One plain sentence a person can read in a list.
         if state == "answer":
             reason = "verified answer" if verified else "answer with a failed check"
         elif state == "error":

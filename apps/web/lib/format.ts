@@ -4,7 +4,7 @@ export function symbolFor(currency?: string | null): string {
   return SYMBOL[(currency ?? '').toUpperCase()] ?? '';
 }
 
-/** Axis-scale money. Indian units when the currency is INR, else SI. */
+/** Indian units (L, Cr) when the currency is INR, else SI. */
 export function compactMoney(n: number, currency?: string | null): string {
   const s = symbolFor(currency);
   const abs = Math.abs(n);

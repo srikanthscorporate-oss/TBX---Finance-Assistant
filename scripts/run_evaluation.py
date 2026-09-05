@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
-"""Run the golden set against the live API and measure accuracy.
+"""Run the golden set against the live API and write evaluation/results/latest.json.
 
-Expected numeric values are recomputed from the source CSVs here, by code that
-shares nothing with the application. A question only counts as numerically
-correct when the API's figure matches that independent computation.
-
-Metrics reported:
-  state accuracy   -- did we land in the right response state?
-  numeric accuracy -- when we answered, was the figure right?
-  grounding rate   -- share of answers carrying evidence + passing verification
-  hallucination    -- answers whose stated figure disagrees with the evidence,
-                      or which state a figure with no verified fact behind it
-  efficiency       -- tokens, LLM calls, latency, escalation rate
+Expected values are recomputed from the CSVs by code that shares nothing with the app.
+Reports state, numeric, grounding and hallucination rates plus tokens, calls and latency.
 """
 from __future__ import annotations
 
@@ -52,13 +43,10 @@ _RETRY_IN = re.compile(r"try again in about (?:(\d+)m )?(\d+)s")
 
 
 def refused_for_seconds(res: dict) -> float:
-    """Seconds the API asked us to wait when it refused a turn as rate limited.
+    """Seconds the API asked us to wait when it refused a turn as rate limited, else 0.
 
-    A single 429 opens the model's circuit breaker for the provider's stated
-    wait, and every turn during that window is refused in milliseconds. A
-    measurement that counts those refusals as failures measures the breaker,
-    not the assistant, so the runner waits the stated time and retries.
-    Returns 0 when the turn was not a rate-limit refusal.
+    A 429 opens the breaker for the provider's stated wait and every turn in that window is
+    refused instantly, so the runner waits and retries rather than scoring the breaker.
     """
     msg = res.get("message") or ""
     if "rate limited" not in msg.lower():
@@ -93,7 +81,12 @@ class Independent:
 
 
 def evaluate_turn(res: dict, expect: dict, ind: Independent) -> dict:
-    """Score one turn. Returns per-check booleans; None means not applicable."""
+    """Score one turn. Returns per-check booleans; None means not applicable.
+
+    Numeric accuracy is checked against the independent CSV computation. For hallucination,
+    any digit run in the prose must appear in a verified fact, the resolved period or dates,
+    or a resolved entity name.
+    """
     out: dict = {"state": res.get("state"), "checks": {}}
     c = out["checks"]
 
@@ -120,7 +113,6 @@ def evaluate_turn(res: dict, expect: dict, ind: Independent) -> dict:
             c["has_confidence"] = ev.get("confidence") is not None
             c["traceable"] = bool(ev.get("sql")) and ev.get("total_record_count", 0) >= 0
 
-    # Numeric accuracy against an independent computation.
     exp = ind.compute(expect.get("value_spec")) if expect.get("value_spec") else None
     if exp is not None and ev:
         want_value, want_count = exp
@@ -139,12 +131,8 @@ def evaluate_turn(res: dict, expect: dict, ind: Independent) -> dict:
         if ev.get("total_record_count") is not None and want_count:
             c["record_count"] = ev["total_record_count"] == want_count
 
-    # Hallucination: any figure in the prose must exist among verified facts.
     answer = res.get("answer") or ""
     if answer and ev:
-        # Everything the server is allowed to have interpolated: verified facts,
-        # plus the resolved period/date strings and entity names. A digit run
-        # outside this set means the model wrote a figure of its own.
         rendered = {re.sub(r"[^\d]", "", f["formatted"]) for f in ev.get("facts", [])}
         for src in (ev.get("resolved_period"), ev.get("resolved_start"),
                     ev.get("resolved_end"), *map(str, ev.get("entities_resolved", {}).values())):
@@ -181,6 +169,13 @@ def evaluate_turn(res: dict, expect: dict, ind: Independent) -> dict:
 
 
 def main() -> int:
+    """Run every turn, retrying rate-limit refusals for the wait the provider asked.
+
+    Rate-limited turns are counted and the report is stamped throttled; rates are 0.0 rather
+    than None when nothing could be measured so reports stay comparable. Escalations count
+    turns that needed a second model. The planner is recorded because a stub run measures the
+    deterministic pipeline only. A throttled run never overwrites last-clean.json.
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument("--api", default=os.getenv("TBX_API", "http://127.0.0.1:8010"))
     ap.add_argument("--out", default=str(RESULTS / "latest.json"))
@@ -217,8 +212,6 @@ def main() -> int:
             try:
                 res = post(args.api, "/api/v1/chat",
                            {"message": turn["question"], "conversation_id": cid})
-                # Honour the breaker: wait what the provider asked, then retry
-                # this turn. Only a refusal that outlives the retries counts.
                 for _ in range(args.rate_limit_retries):
                     wait = refused_for_seconds(res)
                     if not wait:
@@ -238,16 +231,12 @@ def main() -> int:
             latencies.append(elapsed)
 
             usage = res.get("model_usage", [])
-            # A throttled provider degrades the run; count it so the report
-            # can say so instead of presenting a degraded score as the truth.
             rate_limited += sum(1 for u in usage
                                 if not u.get("ok") and "rate limit" in (u.get("error") or "").lower())
             if "rate limited" in (res.get("message") or "").lower():
-                rate_limited += 1          # refused before any call: still throttling
+                rate_limited += 1
             calls.append(len(usage))
             tokens.append(sum(u["prompt_tokens"] + u["completion_tokens"] for u in usage))
-            # Runs that needed a SECOND model (alternate or another provider).
-            # There is no larger-model tier any more, so this is a switch rate.
             if any(u["tier"] in ("alternate", "fallback", "regional") and u.get("ok")
                    for u in usage):
                 escalations += 1
@@ -285,16 +274,10 @@ def main() -> int:
     passed = sum(c["passed"] for c in by_category.values())
 
     def rate(name: str) -> float:
-        # 0.0, not None, when nothing could be measured: a degraded run must
-        # still produce a complete, comparable report (it is stamped throttled).
         t = sum(c[f"check_{name}_total"] for c in by_category.values())
         p = sum(c[f"check_{name}_passed"] for c in by_category.values())
         return round(p / t, 4) if t else 0.0
 
-    # Record which planner produced these numbers. A run against the offline
-    # stub measures the DETERMINISTIC pipeline (resolution, dates, compilation,
-    # verification, grounding) and says nothing about real NLU accuracy. Without
-    # this stamp the headline figure is easy to misread.
     try:
         planner = json.loads(urllib.request.urlopen(
             f"{args.api}/health", timeout=5).read().decode()).get("planner", "unknown")
@@ -348,9 +331,6 @@ def main() -> int:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report, indent=2))
-    # A throttled run must never overwrite the last clean measurement. The
-    # dashboard shows the clean run as the measurement and the latest run as
-    # the latest attempt, so a bad hour cannot erase a good result.
     if not report["throttled"] and report["transport_errors"] == 0 and out_path.name == "latest.json":
         (out_path.parent / "last-clean.json").write_text(json.dumps(report, indent=2))
 

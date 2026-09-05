@@ -17,7 +17,6 @@ for (const { q, want } of cases) {
   seen.add(r.state);
   notes.push(`${r.state.padEnd(22)} <- ${q}`);
 
-  // A non-answer state must never carry a figure.
   if (r.state !== 'answer') {
     if (r.answer) fail('G3', `${r.state} carried an answer: ${r.answer}`);
     if (r.evidence) fail('G3', `${r.state} carried an evidence package`);
@@ -27,7 +26,6 @@ for (const { q, want } of cases) {
   }
 }
 
-// Clarification must offer real options rather than a dead end.
 const clar = await post('/api/v1/chat', { message: 'How much did we spend with Acme last month?' });
 if (!clar.clarification?.options?.length) fail('G3', 'clarification offered no options');
 if (clar.clarification.options.length < 2) fail('G3', 'clarification needs >=2 options');

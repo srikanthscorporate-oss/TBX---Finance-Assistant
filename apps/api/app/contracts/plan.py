@@ -1,10 +1,5 @@
-"""The FinanceQueryPlan: the only thing an LLM is allowed to produce that
-influences a database query.
-
-The planner emits this object and nothing else. It never emits SQL, never emits
-a number, and never emits a field name that is not declared here. The compiler
-turns a validated plan into a parameterized ClickHouse query.
-"""
+"""FinanceQueryPlan: the only model output that influences a query. The compiler turns a
+validated plan into a parameterized ClickHouse query."""
 from __future__ import annotations
 
 from datetime import date
@@ -14,8 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .enums import Direction, GroupBy, Intent, Metric, ReconStatus, TxnStatus
 
-# Relative expressions the planner may use. They are resolved against the
-# DATASET's max transaction date, never against today -- see services/dates.py.
 RelativeRange = Literal[
     "last_month",
     "this_month",
@@ -31,14 +24,14 @@ RelativeRange = Literal[
     "month_before_last",
     "all_time",
 ]
+"""Resolved in services/dates.py against the dataset's max transaction date, not today."""
 
 
 class DateRange(BaseModel):
-    """Either a relative expression or an explicit absolute window.
+    """A relative expression or an absolute window.
 
-    `resolved_start` / `resolved_end` are filled in by the date resolver, never
-    by the model. They are what actually reaches the query, and what we echo
-    back to the user so the window is auditable.
+    `resolved_start` / `resolved_end` are set by the date resolver, not the model, and
+    are what reaches the query.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -71,24 +64,21 @@ class DateRange(BaseModel):
 
 
 class FinanceQueryPlan(BaseModel):
-    """A fully-typed, validated description of one deterministic query.
+    """A typed description of one query.
 
-    Note what is absent: no free-text filter, no raw SQL fragment, no arbitrary
-    column reference. The closed vocabulary is the point.
+    The model proposes `vendor_name`; the resolver sets `vendor_id`. `user_question` is
+    an echo for tracing and is never queried on.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     intent: Intent
 
-    # Entities. IDs are resolved by deterministic lookup from the *_name fields;
-    # the model proposes a name, the resolver decides the id.
     vendor_name: str | None = None
     vendor_id: str | None = None
     category: str | None = None
     account_code: str | None = None
 
-    # Filters
     date_range: DateRange | None = None
     compare_to: DateRange | None = None
     txn_status: TxnStatus | None = None
@@ -98,26 +88,21 @@ class FinanceQueryPlan(BaseModel):
     max_amount: float | None = None
     currency: str | None = Field(default=None, max_length=3)
 
-    # Shape of the result
     metric: Metric = Metric.SUM
     group_by: GroupBy = GroupBy.NONE
     limit: Annotated[int, Field(ge=1, le=1000)] = 100
     order_desc: bool = True
 
-    # Free-text echo of what the user asked, for tracing only. Never queried on.
     user_question: str | None = None
 
     @field_validator("vendor_name", "vendor_id", "category", "account_code",
                      "currency", mode="after")
     @classmethod
     def _no_control_characters(cls, v: str | None) -> str | None:
-        """Reject control characters in any value that reaches a query.
+        """Reject control characters and over-long values.
 
-        These values are always bound as parameters, so this is not the
-        injection defence -- that is the compiler's allowlist. This exists so a
-        name containing a NUL or newline cannot be silently normalised into a
-        match for a *different*, real entity, and so such values never reach
-        logs or the evidence panel.
+        Not the injection defence (values are bound parameters); this stops a name with a
+        NUL or newline from being normalised into a match for a different entity.
         """
         if v is None:
             return v
@@ -131,19 +116,12 @@ class FinanceQueryPlan(BaseModel):
     def _intent_requirements(self) -> "FinanceQueryPlan":
         """Intent-level coherence.
 
-        These requirements are deliberately narrow. An entity-scoped intent is
-        satisfied EITHER by naming the entity or by grouping across it:
-        "spend by category" and "total vendor payouts last month" are both
-        legitimate questions, and rejecting them forced a pointless escalation
-        and then an error, when the plan was correct all along.
+        An entity-scoped intent is satisfied by naming the entity or grouping across it.
+        vendor_payouts selects the payouts table and does not require a vendor.
         """
         if self.intent is Intent.PERIOD_COMPARISON and self.compare_to is None:
             raise ValueError("period_comparison requires `compare_to`")
 
-        # vendor_payouts selects the payouts TABLE; it does not require a
-        # vendor. "Total vendor payouts last month" is a legitimate aggregate.
-        # vendor_spend does name an entity, so it needs one, or a grouping
-        # across vendors.
         has_vendor = bool(self.vendor_name or self.vendor_id)
         grouped_by_vendor = self.group_by is GroupBy.VENDOR
         if self.intent is Intent.VENDOR_SPEND and not (has_vendor or grouped_by_vendor):
@@ -159,7 +137,7 @@ class FinanceQueryPlan(BaseModel):
         return self
 
     def fingerprint(self) -> str:
-        """Stable hash of the semantic content, for caching and dedup."""
+        """Stable hash of the plan minus `user_question`, for caching and dedup."""
         import hashlib
 
         payload = self.model_dump_json(
@@ -169,12 +147,9 @@ class FinanceQueryPlan(BaseModel):
 
 
 class PlanDelta(BaseModel):
-    """A follow-up turn.
+    """A follow-up turn: only the fields that change relative to the previous plan.
 
-    Rather than re-planning from raw chat history, the model emits only the
-    fields that change relative to the previous validated plan. This is both
-    more accurate for coreference ("what about the month before?") and far
-    cheaper in tokens.
+    `clear` lists fields the follow-up resets. A changed vendor name drops the resolved id.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -191,7 +166,6 @@ class PlanDelta(BaseModel):
     group_by: GroupBy | None = None
     limit: int | None = None
 
-    # Fields the follow-up explicitly clears (e.g. "across all vendors now").
     clear: list[str] = Field(default_factory=list)
 
     def apply_to(self, base: FinanceQueryPlan) -> FinanceQueryPlan:
@@ -201,7 +175,6 @@ class PlanDelta(BaseModel):
                 data[field] = None
         for field, value in self.model_dump(exclude={"clear"}, exclude_none=True).items():
             data[field] = value
-        # A changed vendor name invalidates the previously resolved id.
         if self.vendor_name is not None:
             data["vendor_id"] = None
         return FinanceQueryPlan.model_validate(data)

@@ -11,11 +11,6 @@ const MARK = {
   pending: { Icon: CircleDashed,   cls: 'text-muted',    spin: false },
 } as const;
 
-/**
- * One line per stage: name, a single-phrase summary of what it did, and how
- * long it took. The full detail lives in the evidence panel; this rail is for
- * following progress, not auditing it.
- */
 function summary(s: StageState): string {
   const d = stageDetail(s);
   const get = (k: string) => d.find(([key]) => key === k)?.[1];
@@ -37,7 +32,6 @@ export default function StageRail({ stages }: { stages: StageState[] }) {
   const doneCount = stages.filter(s => s.status === 'done').length;
   return (
     <div>
-      {/* Progress as a segmented track: one cell per stage, filled as it completes. */}
       <div className="mb-3 flex gap-[3px]" role="progressbar" aria-valuemin={0} aria-valuemax={6}
            aria-valuenow={doneCount} aria-label="pipeline progress">
         {stages.map(s => (

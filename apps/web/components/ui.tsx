@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react';
 import { CheckCircle, Info, Warning, WarningOctagon } from '@phosphor-icons/react/dist/ssr';
 
-/** A framed region. Used only where elevation carries real hierarchy. */
 export function Panel({ children, className = '' }: { children: ReactNode; className?: string }) {
   return (
     <section className={`overflow-hidden rounded border border-line bg-surface ${className}`}>
@@ -24,10 +23,6 @@ export function PanelHead({ title, meta, actions }: {
   );
 }
 
-/**
- * A single headline figure. A number this important is not a chart -- it is a
- * number, set large, with its unit and context beside it.
- */
 export function Stat({ label, value, unit, hint, tone = 'neutral' }: {
   label: string; value: string; unit?: string; hint?: string;
   tone?: 'neutral' | 'good' | 'warning' | 'critical';
@@ -55,7 +50,6 @@ const STATUS = {
   info:     { Icon: Info,           cls: 'text-muted',    ring: 'border-line bg-raised' },
 } as const;
 
-/** Status never travels as colour alone: icon plus label, every time. */
 export function StatusPill({ kind, children }: {
   kind: keyof typeof STATUS; children: ReactNode;
 }) {

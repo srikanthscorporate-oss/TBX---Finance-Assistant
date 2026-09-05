@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
-"""Rewrite the headline metrics in README.md and docs/model-choice.md from the
-latest evaluation report, so the documents can never quote a number the report
-does not hold. A throttled run is labelled as such rather than presented as the
-pipeline's accuracy.
+"""Rewrite the headline metrics in README.md and docs/model-choice.md from the latest
+evaluation report. A throttled run is labelled as such rather than quoted as accuracy.
 """
 from __future__ import annotations
 
@@ -25,7 +23,6 @@ def main() -> int:
     readme = ROOT / "README.md"
     s = readme.read_text()
     if throttled:
-        # Do not quote a quota event as if it were a measurement.
         para = (f"Measured over {r['turns']} turns of a {r['questions']}-question golden set against\n"
                 f"live models: **no clean measurement is on disk.** The last run on "
                 f"{r['generated_at'][:10]} was throttled by provider rate limits "

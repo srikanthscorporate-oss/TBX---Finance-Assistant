@@ -6,8 +6,7 @@ const PY = 'apps/api/.venv/bin/python';
 const r = run(PY, ['apps/api/tests/security.py'], { token: 'SECURITY_SUITE_PASS' });
 if (!r.ok) fail('G11', `security suite failed (exit ${r.status}):\n${r.out.slice(-1500)}`);
 
-// Positive control: the suite must actually be capable of failing. Feed it a
-// deliberately broken compiler and confirm it reports failure rather than pass.
+// Positive control: a compiler that inlines a parameter must make the suite fail.
 const control = run(PY, ['-c', `
 import sys, re
 sys.path.insert(0, "apps/api")

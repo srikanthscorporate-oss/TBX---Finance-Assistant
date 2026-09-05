@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""Adversarial input must be refused before it can reach the database.
+"""Structurally invalid plans are rejected, and attacker-controlled values that are legitimate
+(category, vendor_id) travel as bound parameters and never appear in the SQL text.
 
-Two distinct properties are asserted:
-  1. Structurally invalid plans are REJECTED (Pydantic / compiler raise).
-  2. For plans that legitimately carry attacker-controlled *values*, those
-     values must travel as bound parameters and never appear in the SQL text.
-
-The second is the one that matters: a value reaching the database is fine, a
-value reaching the SQL *string* is an injection.
+Control characters are refused by the plan contract before the resolver can normalise them.
+Prints SECURITY_SUITE_PASS.
 """
 from __future__ import annotations
 
@@ -46,7 +42,6 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         failures.append(f"{name}: {detail}")
 
 
-# --- 1. Structurally invalid plans must not parse -------------------------
 bad_plans = [
     ("unknown intent", {"intent": "DROP_EVERYTHING"}),
     ("unknown metric", {"intent": "total_spend", "metric": "exec"}),
@@ -65,14 +60,11 @@ for name, payload in bad_plans:
     except ValidationError:
         check(f"reject {name}", True)
 
-# --- 2. Injection in a vendor NAME must never reach SQL text --------------
 vendors = [VendorRecord("V1001", "Acme Technologies", "Acme Technologies Pvt Ltd")]
 for payload in INJECTIONS:
     has_control = any(ord(c) < 32 or ord(c) == 127 for c in payload)
 
     if has_control:
-        # Control characters are refused by the contract itself, before the
-        # resolver can normalise them into a match for a different real vendor.
         try:
             FinanceQueryPlan(intent=Intent.VENDOR_SPEND, vendor_name=payload)
             check(f"contract rejects control chars {payload[:20]!r}", False,
@@ -81,13 +73,11 @@ for payload in INJECTIONS:
             check(f"contract rejects control chars {payload[:20]!r}", True)
         continue
 
-    # 2a. The resolver must not match an injection string to a real vendor.
     res = resolve_vendor(payload, vendors)
     check(f"resolver rejects {payload[:24]!r}",
           res.kind is MatchKind.NOT_FOUND,
           f"resolved to {res.best.vendor_name if res.best else None}")
 
-    # 2b. An unresolved vendor_name must fail compilation, not be interpolated.
     plan = FinanceQueryPlan(intent=Intent.VENDOR_SPEND, vendor_name=payload)
     try:
         cq = compile_plan(plan)
@@ -96,9 +86,6 @@ for payload in INJECTIONS:
     except CompilationError:
         check(f"compile refuses unresolved {payload[:20]!r}", True)
 
-# --- 3. Attacker-controlled values that ARE legitimate must be bound ------
-# A category or vendor_id can legitimately carry arbitrary text. It must appear
-# in params, never in the SQL string.
 for payload in [p for p in INJECTIONS if not any(ord(c) < 32 or ord(c) == 127 for c in p)]:
     plan = FinanceQueryPlan(intent=Intent.CATEGORY_SPEND, category=payload,
                             date_range=resolve(DateRange(relative="last_month"), CAL))
@@ -115,7 +102,6 @@ for payload in [p for p in INJECTIONS if not any(ord(c) < 32 or ord(c) == 127 fo
     check(f"vendor_id bound, not inlined: {payload[:20]!r}",
           payload not in cq2.sql and payload in cq2.params.values())
 
-# --- 4. Generated SQL must be read-only and single-statement --------------
 FORBIDDEN = ("DROP", "DELETE", "INSERT", "ALTER", "TRUNCATE", "CREATE", "GRANT",
              "ATTACH", "SYSTEM", "URL(", "FILE(", "REMOTE(", "INTO OUTFILE")
 samples = [
@@ -138,7 +124,6 @@ for plan in samples:
     check(f"{plan.intent.value} reads only tbx_finance",
           dbs == {"tbx_finance"}, f"referenced databases: {dbs}")
 
-# --- 5. Every intent in the enum is mapped (no silent gap) ----------------
 from app.services.compiler import _INTENT_TABLE  # noqa: E402
 for intent in Intent:
     check(f"intent {intent.value} is mapped", intent in _INTENT_TABLE)

@@ -16,13 +16,11 @@ try {
 if (!health.ready) fail('G12', 'deployed API reports not ready');
 if (!health.dataset_window) fail('G12', 'deployed API has no dataset loaded');
 
-// The UI must be served from the same origin.
 const ui = await fetch(ORIGIN, { signal: AbortSignal.timeout(15000) });
 if (!ui.ok) fail('G12', `UI returned ${ui.status}`);
 const body = await ui.text();
 if (!/StrawHat Finance Assistant/.test(body)) fail('G12', 'UI shell not served');
 
-// And a real question must produce a grounded answer in production.
 const chat = await fetch(`${ORIGIN}/api/v1/chat`, {
   method: 'POST', headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ message: 'Which transactions are still unreconciled?' }),
@@ -32,7 +30,6 @@ if (!chat.ok) fail('G12', `production chat returned ${chat.status}`);
 const cj = await chat.json();
 if (cj.state !== 'answer' || !cj.evidence) fail('G12', `production chat state=${cj.state}`);
 
-// Admin must not be exposed publicly.
 const admin = await fetch(`${ORIGIN}/api/v1/admin/usage`, { signal: AbortSignal.timeout(10000) });
 if (admin.ok) fail('G12', 'admin endpoint is publicly reachable in production');
 

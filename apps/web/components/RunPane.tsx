@@ -51,13 +51,11 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-/** Pick the visuals from what the evidence actually contains. */
 function Visuals({ ev, chartHint, exportHref }: { ev: Evidence; chartHint?: string | null; exportHref: string }) {
   const facts = Object.fromEntries(ev.facts.map(f => [f.key, f]));
   const rows = ev.breakdown;
   const blocks: React.ReactNode[] = [];
 
-  // Reconciliation: a two-way status split is the one honest ring.
   if (facts.rate && facts.matched && facts.unmatched) {
     blocks.push(
       <div key="recon" className="rounded border border-line p-3.5">
@@ -83,7 +81,6 @@ function Visuals({ ev, chartHint, exportHref }: { ev: Evidence; chartHint?: stri
                        height={Math.max(150, Math.min(rows.length * 24 + 36, 300))} />}
       </div>);
 
-    // Share of the whole: top three plus the rest, never more slices than that.
     if (!isTime && rows.length >= 3) {
       const top = rows.slice(0, 3).map(r => ({ label: r.label, value: r.value }));
       const rest = rows.slice(3).reduce((a, r) => a + r.value, 0);

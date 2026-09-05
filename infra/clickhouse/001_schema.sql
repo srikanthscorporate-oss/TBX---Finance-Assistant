@@ -1,8 +1,5 @@
--- TBX Finance Assistant -- finance source of truth.
--- Isolated from Langfuse, which gets its own `langfuse` database on the same server.
 CREATE DATABASE IF NOT EXISTS tbx_finance;
 
--- Chart of accounts -------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tbx_finance.accounts
 (
     account_code   String,
@@ -14,7 +11,6 @@ CREATE TABLE IF NOT EXISTS tbx_finance.accounts
 ENGINE = MergeTree
 ORDER BY account_code;
 
--- Vendor master -----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tbx_finance.vendors
 (
     vendor_id      String,
@@ -29,7 +25,6 @@ CREATE TABLE IF NOT EXISTS tbx_finance.vendors
 ENGINE = MergeTree
 ORDER BY vendor_id;
 
--- Transactions ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tbx_finance.transactions
 (
     transaction_id      String,
@@ -53,7 +48,6 @@ PARTITION BY toYYYYMM(txn_date)
 ORDER BY (txn_date, vendor_id, transaction_id)
 SETTINGS index_granularity = 8192;
 
--- Vendor payouts ----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tbx_finance.vendor_payouts
 (
     payout_id       String,
@@ -70,7 +64,6 @@ ENGINE = MergeTree
 PARTITION BY toYYYYMM(payout_date)
 ORDER BY (payout_date, vendor_id, payout_id);
 
--- Reconciliation ----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tbx_finance.reconciliation
 (
     recon_id         String,
@@ -84,7 +77,6 @@ CREATE TABLE IF NOT EXISTS tbx_finance.reconciliation
 ENGINE = MergeTree
 ORDER BY (transaction_id, recon_id);
 
--- Ingestion provenance ----------------------------------------------------
 CREATE TABLE IF NOT EXISTS tbx_finance.dataset_versions
 (
     dataset_version String,

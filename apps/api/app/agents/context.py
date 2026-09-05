@@ -1,8 +1,4 @@
-"""Shared run-scoped types.
-
-Extracted so planner, composer, evidence builder and the orchestrator can all
-depend on these without importing each other.
-"""
+"""Run-scoped types shared by the planner, composer, evidence builder and pipeline."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -22,15 +18,13 @@ CAPABILITIES = [
     "Period-over-period comparisons and trends",
 ]
 
-# What a refusal offers instead. Each is a real, answerable question, so the
-# conversation always has a next step that leads to the right-hand pane doing
-# something.
 GUIDED_QUESTIONS = [
     "How much did we spend last month?",
     "Which transactions are still unreconciled?",
     "Show me the top vendors last month",
     "What is our reconciliation rate for the last 6 months?",
 ]
+"""Offered with every refusal; each must be answerable by the pipeline."""
 
 OUT_OF_SCOPE_MESSAGE = (
     "Your input isn't relevant to the services we provide. I answer questions "
@@ -41,10 +35,9 @@ OUT_OF_SCOPE_MESSAGE = (
 
 @dataclass
 class DatasetContext:
-    """Everything the pipeline needs to know about the loaded data.
+    """Loaded-data facts read from the database at startup.
 
-    Read from the database at startup, never hardcoded, which is what keeps
-    relative periods anchored to the data rather than to today.
+    Relative periods anchor to the dataset's calendar, not today's date.
     """
 
     calendar: DatasetCalendar
@@ -56,19 +49,16 @@ class DatasetContext:
 
 @dataclass
 class ConversationState:
-    """Multi-turn memory.
+    """Multi-turn memory: the last validated plan is enough for coreference.
 
-    Deliberately small: the last validated plan is all that is needed for
-    coreference, and it is far more reliable than replaying raw chat history.
+    `pending_plan` is a plan parked on a clarification; answering the clarification
+    completes it rather than re-planning the original question.
     """
 
     conversation_id: str
     last_plan: FinanceQueryPlan | None = None
     last_period_label: str | None = None
     turns: int = 0
-    # A plan parked on a clarification. Answering the clarification completes
-    # THIS plan rather than re-planning the original sentence, so the user's
-    # wording is never re-interpreted a second time.
     pending_plan: FinanceQueryPlan | None = None
     pending_question: str | None = None
 

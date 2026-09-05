@@ -1,5 +1,4 @@
-"""Langfuse tracing. Degrades to a no-op when Langfuse is not configured, so the
-application never fails because observability is unavailable."""
+"""Langfuse tracing; a no-op when Langfuse is not configured."""
 from __future__ import annotations
 
 import logging

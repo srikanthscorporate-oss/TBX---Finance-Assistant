@@ -1,17 +1,8 @@
 """FinanceQueryPlan -> parameterized ClickHouse SQL.
 
-Security model, in order of the layers a malicious or malformed plan must pass:
-
-  1. Pydantic closed enums     -- an unknown intent/metric/group_by never parses.
-  2. This module's allowlists  -- identifiers are looked up in dicts defined
-                                  here; nothing from the plan is ever
-                                  interpolated into SQL as an identifier.
-  3. Bound parameters          -- every user-influenced VALUE travels as a
-                                  ClickHouse query parameter, never as text.
-  4. Read-only DB credentials  -- see infra/clickhouse/002_readonly_user.sql.
-
-There is deliberately no code path that concatenates plan-derived strings into
-the SQL body. If you find yourself needing one, add an allowlist entry instead.
+Identifiers come only from the allowlists in this module and every plan-derived
+value is a bound ClickHouse parameter. Nothing from the plan is concatenated
+into the SQL body; add an allowlist entry instead.
 """
 from __future__ import annotations
 
@@ -24,12 +15,7 @@ from ..contracts.plan import FinanceQueryPlan
 DB = "tbx_finance"
 MAX_LIMIT = 1000
 
-# --- Allowlists -----------------------------------------------------------
-# Every identifier that can appear in generated SQL is a VALUE in one of these
-# maps. Plan fields select a key; they never supply the identifier itself.
-
 _GROUP_BY_SQL: dict[GroupBy, tuple[str, str]] = {
-    # GroupBy -> (sql expression, output label column)
     GroupBy.VENDOR: ("t.vendor_id", "vendor_id"),
     GroupBy.CATEGORY: ("t.category", "category"),
     GroupBy.ACCOUNT: ("t.account_code", "account_code"),
@@ -42,6 +28,7 @@ _GROUP_BY_SQL: dict[GroupBy, tuple[str, str]] = {
     GroupBy.QUARTER: ("toStartOfQuarter(t.txn_date)", "quarter"),
     GroupBy.YEAR: ("toStartOfYear(t.txn_date)", "year"),
 }
+"""GroupBy -> (sql expression, output label column)."""
 
 _METRIC_SQL: dict[Metric, str] = {
     Metric.SUM: "sum({col})",
@@ -52,8 +39,6 @@ _METRIC_SQL: dict[Metric, str] = {
     Metric.MEDIAN: "quantileExact(0.5)({col})",
 }
 
-# Which base table each intent reads. Intents are a closed enum, so this map is
-# exhaustive by construction (asserted in tests).
 _INTENT_TABLE: dict[Intent, str] = {
     Intent.TOTAL_SPEND: "transactions",
     Intent.VENDOR_SPEND: "transactions",
@@ -71,8 +56,8 @@ _INTENT_TABLE: dict[Intent, str] = {
     Intent.PAYOUT_STATUS: "vendor_payouts",
     Intent.VENDOR_LOOKUP: "vendors",
 }
+"""Base table per intent; exhaustive over the closed enum (asserted in tests)."""
 
-# Detail columns returned for record-level lookups, per table.
 _DETAIL_COLUMNS: dict[str, list[str]] = {
     "transactions": [
         "transaction_id", "txn_date", "vendor_id", "account_code", "category",
@@ -103,24 +88,22 @@ _AMOUNT_COLUMN: dict[str, str] = {
 
 
 class CompilationError(ValueError):
-    """The plan cannot be compiled. Surfaced as an internal error, never as an
-    answer -- we do not guess at what the user meant."""
+    """The plan cannot be compiled; surfaced as an error, never as an answer."""
 
 
 @dataclass
 class CompiledQuery:
+    """`kind` is aggregate, grouped or detail."""
     sql: str
     params: dict[str, Any]
-    kind: str                       # aggregate | grouped | detail
+    kind: str
     label_column: str | None = None
     value_column: str = "value"
     columns: list[str] = field(default_factory=list)
 
     def display(self) -> dict[str, Any]:
-        """What the evidence panel shows: the parameterized SQL and the bound
-        parameters, side by side. We deliberately do NOT render an "inlined"
-        SQL string -- showing users a copy-pasteable concatenated query would
-        model exactly the pattern this compiler exists to prevent."""
+        """The parameterized SQL and bound parameters for the evidence panel; no
+        inlined SQL string is rendered."""
         return {"sql": self.sql, "params": {k: str(v) for k, v in self.params.items()}}
 
 
@@ -146,9 +129,9 @@ def compile_plan(plan: FinanceQueryPlan) -> CompiledQuery:
     return _compile_aggregate(plan, table, where, params)
 
 
-# --- WHERE ----------------------------------------------------------------
-
 def _build_where(plan: FinanceQueryPlan, table: str, params: dict[str, Any]) -> str:
+    """Only vendor lookup filters on name, as an exact bound parameter; fuzzy
+    matching lives in the resolver. `unreconciled` is an intent, not a filter."""
     clauses: list[str] = []
     date_col = _DATE_COLUMN[table]
 
@@ -165,8 +148,6 @@ def _build_where(plan: FinanceQueryPlan, table: str, params: dict[str, Any]) -> 
         clauses.append("t.vendor_id = {vendor_id:String}")
         params["vendor_id"] = plan.vendor_id
     elif plan.vendor_name and table == "vendors":
-        # Only the vendor-lookup path matches on name, and only as an exact
-        # bound parameter. Fuzzy matching happens in the resolver, not in SQL.
         clauses.append("t.vendor_name = {vendor_name:String}")
         params["vendor_name"] = plan.vendor_name
     elif plan.vendor_name and not plan.vendor_id:
@@ -206,14 +187,11 @@ def _build_where(plan: FinanceQueryPlan, table: str, params: dict[str, Any]) -> 
         clauses.append(f"t.{amount_col} <= {{max_amount:Decimal64(2)}}")
         params["max_amount"] = plan.max_amount
 
-    # `unreconciled` is a named intent, not a free-text filter.
     if plan.intent is Intent.UNRECONCILED and plan.recon_status is None:
         clauses.append("t.reconciliation_status IN ('unmatched', 'pending', 'disputed')")
 
     return " AND ".join(clauses) if clauses else "1"
 
-
-# --- Shapes ---------------------------------------------------------------
 
 def _metric_expr(plan: FinanceQueryPlan, table: str) -> str:
     amount_col = _AMOUNT_COLUMN[table]
@@ -235,13 +213,13 @@ def _compile_aggregate(plan, table, where, params) -> CompiledQuery:
 
 
 def _compile_grouped(plan, table, where, params, force_group: GroupBy | None = None) -> CompiledQuery:
+    """Time series are ordered chronologically regardless of order_desc."""
     group = force_group or plan.group_by
     if group not in _GROUP_BY_SQL:
         raise CompilationError(f"unsupported group_by: {group}")
     expr, label = _GROUP_BY_SQL[group]
     metric = _metric_expr(plan, table)
     order = "DESC" if plan.order_desc else "ASC"
-    # Time series read chronologically regardless of order_desc.
     if group in {GroupBy.DAY, GroupBy.WEEK, GroupBy.MONTH, GroupBy.QUARTER, GroupBy.YEAR}:
         order_by = f"{label} ASC"
     else:

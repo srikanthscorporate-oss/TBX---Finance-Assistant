@@ -1,11 +1,7 @@
-"""Turning a question into a validated FinanceQueryPlan.
+"""First model call: a question to a schema-valid FinanceQueryPlan.
 
-Model call one of two. Not finished until a plan SATISFIES THE SCHEMA.
-
-Recovery never goes to a larger model. Attempt order:
-  1. primary (or the pinned model)
-  2. the same model again, told exactly what was wrong
-  3. a different compliant model (auto mode only; a pinned model stays pinned)
+Attempt order: the primary (or pinned) model, the same model again with the validation
+error, then the alternate model in auto mode only. No larger model is ever tried.
 """
 from __future__ import annotations
 
@@ -74,7 +70,7 @@ class Planner:
                             "Switched to an alternate model after a planning failure")
                 return parsed, switched
             except AllModelsRateLimited:
-                raise            # not a planning problem; let the pipeline explain it
+                raise
             except Exception as e:  # noqa: BLE001
                 last_error = e
                 reason = str(e)[:300]

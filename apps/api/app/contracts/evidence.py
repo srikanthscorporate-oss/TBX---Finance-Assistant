@@ -1,8 +1,6 @@
-"""The evidence package: the only source of numbers in a response.
+"""The evidence package, the only source of figures in a response.
 
-Nothing downstream of this module is permitted to invent a figure. The response
-composer receives an EvidencePackage and may reference its facts by key
-(`{{fact.total}}`), but the interpolation happens server-side after generation.
+The composer cites facts by key; substitution happens server-side after generation.
 """
 from __future__ import annotations
 
@@ -15,7 +13,7 @@ from .enums import ConfidenceBand
 
 
 class SourceRecordRef(BaseModel):
-    """A pointer back to a real row, so any figure can be traced to source."""
+    """A pointer back to a source row."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -38,12 +36,7 @@ class BreakdownRow(BaseModel):
 
 
 class ComputedFact(BaseModel):
-    """A single deterministically computed value.
-
-    `key` is what the composer may cite as `{{key}}`. `value` is what the server
-    substitutes. The model never sees a rendered number it could copy wrongly --
-    it sees the key and a formatted preview only.
-    """
+    """One computed value; `key` is cited as `{{key}}` and `formatted` is substituted."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -95,7 +88,7 @@ class VerificationResult(BaseModel):
 
 
 class ConfidenceReport(BaseModel):
-    """Confidence derived from data quality signals, never from model self-report."""
+    """Confidence from data-quality signals, not model self-report."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -106,7 +99,7 @@ class ConfidenceReport(BaseModel):
 
 
 class EvidencePackage(BaseModel):
-    """Everything the user needs to check the answer themselves."""
+    """Everything needed to check an answer."""
 
     model_config = ConfigDict(extra="forbid")
 

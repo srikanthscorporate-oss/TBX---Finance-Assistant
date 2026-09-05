@@ -1,9 +1,5 @@
-"""Deterministic entity resolution.
-
-Vendor names are resolved by lookup and string similarity in Python -- never by
-a LIKE clause built from model output, and never by "take the best match and
-hope". Ambiguity is a first-class outcome that becomes CLARIFICATION_REQUIRED.
-"""
+"""Deterministic vendor resolution by normalisation and string similarity in
+Python; ambiguity becomes CLARIFICATION_REQUIRED."""
 from __future__ import annotations
 
 import unicodedata
@@ -19,10 +15,10 @@ class MatchKind(str, Enum):
     NOT_FOUND = "not_found"
 
 
-# A single candidate must clear this to be usable at all.
 MIN_ACCEPT = 0.72
-# If the runner-up is this close to the leader, we refuse to choose.
+"""A candidate must clear this to be usable at all."""
 AMBIGUITY_MARGIN = 0.08
+"""A runner-up this close to the leader makes the match ambiguous."""
 
 
 @dataclass(frozen=True)
@@ -79,20 +75,19 @@ def normalize(s: str) -> str:
 
 
 def _token_score(q_token: str, t_token: str) -> float:
-    """How well one query token matches one target token."""
+    """How well one query token matches one target token; a 3+ char prefix scores 0.95."""
     if q_token == t_token:
         return 1.0
     if t_token.startswith(q_token) and len(q_token) >= 3:
-        return 0.95          # "tech" -> "technologies"
+        return 0.95
     return SequenceMatcher(None, q_token, t_token).ratio()
 
 
 def _alignment(query: str, target: str) -> float:
     """Mean best-match score of each query token against the target's tokens.
 
-    This is what lets "acme tech" find Acme Technologies and "nrthwind" survive
-    a typo, while still scoring "acme" identically against both Acme vendors so
-    the ambiguity check can refuse to choose between them.
+    Lets "acme tech" find Acme Technologies while scoring "acme" identically
+    against both Acme vendors, so the ambiguity check applies.
     """
     q_tokens, t_tokens = query.split(), target.split()
     if not q_tokens or not t_tokens:
@@ -101,19 +96,19 @@ def _alignment(query: str, target: str) -> float:
 
 
 def _similarity(query: str, target: str) -> float:
+    """A full prefix match scores 0.9: a candidate, but not a winner over a sibling
+    sharing the prefix."""
     if query == target:
         return 1.0
     ratio = SequenceMatcher(None, query, target).ratio()
     q_tokens, t_tokens = set(query.split()), set(target.split())
     overlap = (len(q_tokens & t_tokens) / len(q_tokens)) * 0.85 if q_tokens else 0.0
-    # A full prefix match ("acme" -> "acme technologies") scores high enough to
-    # be a candidate but never high enough to win outright when a sibling vendor
-    # shares the prefix -- the AMBIGUITY_MARGIN check settles those.
     prefix = 0.9 if target.startswith(query + " ") else 0.0
     return max(ratio, overlap, prefix, _alignment(query, target))
 
 
 def resolve_vendor(query: str, vendors: list[VendorRecord]) -> Resolution:
+    """A single exact normalised hit wins; several close fuzzy hits are ambiguous."""
     q = normalize(query)
     if not q:
         return Resolution(MatchKind.NOT_FOUND, query, [])
@@ -132,7 +127,6 @@ def resolve_vendor(query: str, vendors: list[VendorRecord]) -> Resolution:
     if not scored:
         return Resolution(MatchKind.NOT_FOUND, query, [])
 
-    # An exact normalized hit on exactly one vendor wins outright.
     exact = [c for c in scored if normalize(c.record.vendor_name) == q]
     if len(exact) == 1:
         return Resolution(MatchKind.EXACT, query, exact)
@@ -142,7 +136,6 @@ def resolve_vendor(query: str, vendors: list[VendorRecord]) -> Resolution:
     if len(scored) == 1:
         return Resolution(MatchKind.UNIQUE_FUZZY, query, scored)
 
-    # Several plausible vendors: refuse to guess if the top two are close.
     if scored[0].score - scored[1].score < AMBIGUITY_MARGIN:
         close = [c for c in scored if scored[0].score - c.score < AMBIGUITY_MARGIN]
         return Resolution(MatchKind.AMBIGUOUS, query, close[:8])

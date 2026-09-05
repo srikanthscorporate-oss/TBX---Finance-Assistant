@@ -1,11 +1,9 @@
-// G2: the answer's figure equals an independently computed value from the CSVs.
-// The expected number is computed HERE from source data -- never copied from
-// the API response -- so this gate can actually fail.
+// G2: the answer's figure matches an independent CSV computation.
 import { post, loadTransactions, sumWhere, pass, fail } from './_lib.mjs';
 
 const txns = loadTransactions();
 
-// Anchor: the dataset's own max month minus one = what "last month" must mean.
+// "last month" anchors to the dataset's max month, not today.
 const maxDate = txns.map(r => r.txn_date).sort().at(-1);
 const [y, m] = maxDate.split('-').map(Number);
 const prev = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
@@ -29,12 +27,10 @@ if (Math.abs(got - expected.total) > 0.02)
 if (ev.total_record_count !== expected.count)
   fail('G2', `record count mismatch: api=${ev.total_record_count} independent=${expected.count}`);
 
-// The rendered sentence must contain the verified figure, not some other number.
 const rendered = total.formatted.replace(/[^\d]/g, '');
 if (!res.answer.replace(/[^\d]/g, '').includes(rendered))
   fail('G2', `answer text does not carry the verified figure: ${res.answer}`);
 
-// Grounding apparatus must actually be present and passing.
 if (!ev.verification || ev.verification.checks.length < 3)
   fail('G2', 'verification checks missing');
 const blockingFailed = ev.verification.checks.filter(c => !c.passed && c.severity === 'blocking');

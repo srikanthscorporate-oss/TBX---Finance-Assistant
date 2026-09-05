@@ -1,17 +1,9 @@
-"""The model catalog: every model the assistant is allowed to use.
+"""The model catalog: every model the assistant may use.
 
-Section 7 of the problem statement sets a hard ceiling of 20B parameters and
-says that defaulting to a larger model without justification is scored down.
-This module is where that constraint lives in code rather than in a document:
-
-  * every entry records its parameter count, so the limit can be ENFORCED at
-    startup (see `check_compliance`) instead of trusted;
-  * the catalog is the single source for the UI dropdown, the router's tiers,
-    and the model-choice note, so the three cannot disagree.
-
-Availability is gated on the provider's API key being present. An entry whose
-key is missing is listed as unavailable rather than hidden, so the UI can show
-what could be enabled.
+Each entry records its parameter count so the 20B ceiling is enforced at startup
+by `check_compliance`. The catalog feeds the dropdown, the router tiers and the
+model-choice note. An entry whose provider key is missing is listed as
+unavailable rather than hidden.
 """
 from __future__ import annotations
 
@@ -24,38 +16,43 @@ from dataclasses import dataclass, field
 
 log = logging.getLogger("tbx.catalog")
 
-# The organiser's ceiling. Total parameters, in billions.
 PARAM_LIMIT_B = float(os.getenv("MODEL_PARAM_LIMIT_B", "20"))
+"""Ceiling on total parameters, in billions."""
 
-# Models within this fraction over the limit start with a WARNING rather than a
-# refusal. This exists for exactly one case: the nominal "20B" class where the
-# published total is a fraction over (gpt-oss-20b is 20.9B total, 3.6B active).
-# Anything beyond the band is refused outright. The band is deliberately narrow
-# so it cannot admit a 24B or 26B model.
 TOLERANCE = float(os.getenv("MODEL_PARAM_TOLERANCE", "0.05"))
+"""Fraction over the limit that warns instead of refusing.
+
+Covers the nominal 20B class (gpt-oss-20b is 20.9B total, 3.6B active) without
+admitting a 24B model.
+"""
 
 
 @dataclass(frozen=True)
 class CatalogModel:
-    id: str                    # LiteLLM model string
-    label: str                 # what the dropdown shows
-    provider: str              # groq | openrouter | sarvam
-    params_b: float            # total parameters, billions
-    active_params_b: float | None = None   # MoE active parameters, if applicable
+    """One catalog entry.
+
+    `params_b` is total parameters in billions and `active_params_b` the MoE
+    active count. `list_when_keyed` marks a paid provider the user opts into by
+    adding its key (Sarvam); paid OpenRouter models never ride in on the
+    free-tier key. `verified` means it passed the planning probe. `size_known`
+    is False when the provider publishes no parameter count.
+    """
+    id: str
+    label: str
+    provider: str
+    params_b: float
+    active_params_b: float | None = None
     api_key_env: str = ""
     api_base: str | None = None
     supports_json_mode: bool = True
-    free: bool = True          # no per-token cost on this key
-    # A paid provider the user has deliberately opted into by adding its key
-    # (Sarvam). Paid models on a provider whose key exists only for its free
-    # tier (OpenRouter) must NOT ride in on that key.
+    free: bool = True
     list_when_keyed: bool = False
-    verified: bool = False     # passed the planning probe on this project
+    verified: bool = False
     note: str = ""
     input_cost_per_m: float = 0.0
     output_cost_per_m: float = 0.0
-    size_known: bool = True       # False when the provider publishes no parameter count
-    discovered: bool = False      # came from a provider listing, not the static allowlist
+    size_known: bool = True
+    discovered: bool = False
 
     @property
     def available(self) -> bool:
@@ -71,9 +68,7 @@ class CatalogModel:
 
     @property
     def listed(self) -> bool:
-        """Eligible for the dropdown: within the ceiling AND free, or on a
-        provider the user opted into by adding its key. Paid OpenRouter models
-        are never listed just because the OpenRouter key exists."""
+        """Within the ceiling and free, or on a provider the user opted into by adding its key."""
         return (not self.refused) and (self.free or (self.list_when_keyed and self.available))
 
     @property
@@ -96,8 +91,6 @@ class CatalogModel:
         }
 
 
-# Ordered: the first AVAILABLE entry is the auto-mode primary; the first
-# available entry after it is the alternate. Keep that ordering deliberate.
 CATALOG: list[CatalogModel] = [
     CatalogModel(
         id="groq/openai/gpt-oss-20b", label="GPT-OSS 20B", provider="groq",
@@ -140,8 +133,8 @@ CATALOG: list[CatalogModel] = [
         note="Provisioned ahead of the key. Model id unconfirmed against "
              "Sarvam's chat API; verify before relying on it."),
 ]
+"""Ordered: the first available entry is the auto primary, the next available is the alternate."""
 
-# Explicitly EXCLUDED, so nobody re-adds them without reading why.
 EXCLUDED = {
     "groq/openai/gpt-oss-120b": "120B, six times the ceiling",
     "openai/sarvam-m": "24B, over the ceiling",
@@ -150,13 +143,8 @@ EXCLUDED = {
     "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": "30B, over the ceiling",
     "groq/compound": "agentic system over undisclosed large models",
 }
+"""Refused by id, with the reason."""
 
-
-# ---- OpenRouter discovery ---------------------------------------------------
-# Every free model on the key is listed, so the user can see the whole set.
-# Only those whose published size is within the ceiling are selectable; the
-# rest appear greyed with their size. A model with no published size cannot be
-# shown to comply and is treated as over the ceiling.
 
 _SIZE_RE = re.compile(r"(?<![a-z0-9])(\d+(?:\.\d+)?)b(?:-a(\d+(?:\.\d+)?)b)?(?![a-z0-9])", re.I)
 _discovered: list[CatalogModel] | None = None
@@ -173,8 +161,12 @@ def _parse_size(model_id: str, name: str) -> tuple[float | None, float | None]:
 
 
 def discover_openrouter_free(force: bool = False) -> list[CatalogModel]:
-    """Free models on the OpenRouter key, refreshed hourly. Failure is silent:
-    the static allowlist still works without it."""
+    """Free models on the OpenRouter key, refreshed hourly.
+
+    All are listed so the user sees the whole set; only those with a published
+    size within the ceiling are selectable, and an unpublished size counts as
+    over the ceiling. Discovery failure is silent; the static list still works.
+    """
     global _discovered, _discovered_at
     import time
     key = os.getenv("OPENROUTER_API_KEY")
@@ -208,10 +200,9 @@ def discover_openrouter_free(force: bool = False) -> list[CatalogModel]:
         if (outputs and "text" not in outputs) or any(
                 k in m["id"] for k in ("lyria", "content-safety", "guard", "embed", "tts", "whisper")) \
                 or m["id"] == "openrouter/free":
-            continue    # generators, classifiers and router aliases are not planners
+            continue
         known = total is not None
         out.append(CatalogModel(
-            # OpenRouter names read "Vendor: Model Name"; keep the model part.
             id=mid, label=((m.get("name") or m["id"]).split(":", 1)[-1].strip() or m["id"])[:40],
             provider="openrouter",
             params_b=total if known else PARAM_LIMIT_B * 10, active_params_b=active,
@@ -255,9 +246,8 @@ class ComplianceError(RuntimeError):
 def check_compliance(configured: list[str]) -> list[str]:
     """Refuse to start with a model that breaks the ceiling.
 
-    Returns warnings for in-band entries. Raises for anything over the band or
-    for a model that is not in the catalog at all, because an unknown model has
-    an unknown parameter count and cannot be shown to comply.
+    Returns warnings for in-band entries; raises for anything over the band or
+    absent from the catalog, whose size is therefore unknown.
     """
     warnings: list[str] = []
     for model_id in configured:

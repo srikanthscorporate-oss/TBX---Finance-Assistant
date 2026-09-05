@@ -1,8 +1,6 @@
-"""Deterministic verification of a query result before it may become an answer.
+"""Deterministic checks on a query result before it may become an answer.
 
-Runs after the query and before any LLM sees the numbers. Blocking failures veto
-the answer entirely (we return DATA_UNAVAILABLE or ERROR rather than a figure we
-cannot stand behind); warnings survive but depress confidence.
+Blocking failures veto the answer; warnings lower confidence.
 """
 from __future__ import annotations
 
@@ -13,10 +11,8 @@ from ..contracts.enums import Intent, Metric
 from ..contracts.evidence import VerificationResult
 from ..contracts.plan import FinanceQueryPlan
 
-# Aggregate and breakdown must agree to within this relative tolerance.
-# Decimal64(2) summation is exact, so the tolerance only absorbs float
-# round-tripping through JSON, not real arithmetic drift.
 REL_TOLERANCE = 1e-6
+"""Absorbs float round-tripping through JSON; Decimal64 sums are exact."""
 
 
 def verify(
@@ -75,11 +71,9 @@ def _check_entity_resolved(vr: VerificationResult, plan: FinanceQueryPlan) -> No
 
 
 def _check_rows_present(vr, plan, rows, aggregate) -> None:
+    """Zero rows is a warning; whether it is an answer or DATA_UNAVAILABLE is the caller's call."""
     count = _record_count(rows, aggregate)
     if count == 0:
-        # Zero is a legitimate ANSWER for "how many are unreconciled?" but is
-        # DATA_UNAVAILABLE for "how much did we spend with X?" -- the caller
-        # decides; verification only records the fact.
         vr.add("records_returned", False, "query matched zero records",
                severity="warning")
     else:
@@ -104,11 +98,8 @@ def _check_currency(vr, rows, aggregate) -> None:
 
 
 def _check_aggregate_matches_breakdown(vr, plan, rows, aggregate) -> None:
-    """If we have both a total and a breakdown, they must agree.
-
-    This is the check that catches a wrong GROUP BY, a silently applied LIMIT,
-    or a filter that differs between the two queries.
-    """
+    """Total and breakdown must agree; catches a wrong GROUP BY, a silent LIMIT or a filter
+    mismatch."""
     if aggregate is None or not rows or plan.metric is not Metric.SUM:
         return
     if not all("value" in r for r in rows):

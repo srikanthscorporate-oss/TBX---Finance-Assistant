@@ -1,9 +1,7 @@
 """Minimal ClickHouse HTTP client.
 
-Uses server-side bound parameters (`{name:Type}` + `param_<name>`) exclusively.
-There is no method on this class that accepts an already-interpolated query, by
-design -- the compiler hands over SQL and params separately and they stay
-separate all the way to the wire.
+SQL and parameters travel separately to the wire; parameters are bound
+server-side as `{name:Type}` + `param_<name>`.
 """
 from __future__ import annotations
 
@@ -42,17 +40,17 @@ class ClickHouseClient:
         self.max_rows_to_read = max_rows_to_read
 
     def query(self, sql: str, params: dict[str, Any] | None = None) -> QueryResult:
-        """Run a read query. `params` are bound server-side, never interpolated."""
+        """Run a read query with server-side bound parameters.
+
+        The per-query ceilings sit under the read-only user's settings profile.
+        max_rows_to_read stays well above the 20M-row test size because granule
+        reads overshoot the nominal row count.
+        """
         qs: dict[str, str] = {
             "database": self.database,
             "default_format": "JSON",
-            # Application-level ceilings. The read-only user's settings profile
-            # enforces its own, which these cannot exceed.
             "max_execution_time": str(self.timeout),
             "max_result_rows": str(self.max_result_rows),
-            # Bound a runaway scan without rejecting a full pass over the 20M
-            # rows the prototype is tested at (granule reads can exceed the
-            # nominal count, so the ceiling sits well above it).
             "max_rows_to_read": str(self.max_rows_to_read),
             "result_overflow_mode": "throw",
             "readonly": "1",

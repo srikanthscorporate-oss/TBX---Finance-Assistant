@@ -1,16 +1,4 @@
-"""Orchestration.
-
-The happy path is TWO model calls: one structured plan, one composed sentence.
-Everything between them is deterministic Python with no model involvement, and
-that is what makes the numbers defensible while keeping latency and token cost
-down.
-
-This module decides WHAT happens and in what order. It delegates the how:
-  planner.py           the plan call, validation and escalation
-  composer_agent.py    the compose call, retry and template fallback
-  evidence_builder.py  assembling the evidence package
-  services/*           resolution, dates, compilation, verification, confidence
-"""
+"""Per-turn orchestration: two model calls (plan, compose) with deterministic steps between."""
 from __future__ import annotations
 
 import uuid
@@ -41,7 +29,6 @@ from .planner import Planner, PlanningFailed
 from ..services import composer as comp_svc
 from ..services.cache import cache as get_cache
 
-# Re-exported so existing callers keep importing these from here.
 __all__ = ["Pipeline", "ConversationState", "DatasetContext", "RunContext", "CAPABILITIES"]
 
 
@@ -58,8 +45,6 @@ class Pipeline:
         self.judge = judge or Judge(get_cache(), ctx.dataset_version)
         router.judge = self.judge
 
-    # -- public ------------------------------------------------------------
-
     def run(self, question: str, state: ConversationState,
             model_choice: str | None = None) -> AssistantResponse:
         rc = RunContext(run_id=f"run_{uuid.uuid4().hex[:12]}",
@@ -73,7 +58,6 @@ class Pipeline:
         rc.emit(EventType.RUN_STARTED, "Understanding your question",
                 question=question, turn=state.turns + 1,
                 model=pinned.model if pinned else "auto")
-        # A new question supersedes any clarification still waiting.
         state.pending_plan = state.pending_question = None
         if not question.strip():
             return self._respond(rc, ResponseState.ERROR, message="Please type a question.")
@@ -88,8 +72,6 @@ class Pipeline:
                 message=f"The model providers are rate limited right now, so I have not "
                         f"answered rather than guess. Please try again in about {mins}.")
         except PlanningFailed as e:
-            # Say which model failed and why, rather than a generic error. With
-            # a pinned model this is the honest outcome of honouring the pin.
             rc.emit(EventType.RUN_FAILED, "No valid plan", model=e.model,
                     attempts=e.attempts, error=str(e.last)[:200])
             hint = (" Try Auto, or a different model from the dropdown."
@@ -104,11 +86,14 @@ class Pipeline:
                                  message="Something went wrong while answering that. "
                                          "Please try again.")
 
-    # -- the sequence ------------------------------------------------------
-
     def _run(self, question: str, state: ConversationState,
              rc: RunContext, pinned: ModelSpec | None) -> AssistantResponse:
-        # 0. Judge: is this even about the records? No agent runs otherwise.
+        """Relevance gate, plan, validate, resolve the vendor, then `_execute`.
+
+        A new question clears any pending clarification. A follow-up whose plan
+        fingerprint equals the previous plan's asks for clarification instead of
+        re-reporting the same figure.
+        """
         rel = relevance.assess(question, self.ctx, state.last_plan is not None)
         if not rel.relevant:
             rc.emit(EventType.TASK_CREATED, "Judge: not relevant, no agents spawned",
@@ -117,7 +102,6 @@ class Pipeline:
             self._judge_record(rc, None)
             return self._refuse(rc, "out_of_scope", rel.reason)
 
-        # 0b. Judge: which agents, which model, or a cache hit.
         reg = self.planner.router.registry
         primary = reg[Tier.PRIMARY].model if Tier.PRIMARY in reg else ""
         alternate = reg[Tier.ALTERNATE].model if Tier.ALTERNATE in reg else None
@@ -126,7 +110,6 @@ class Pipeline:
         rc.emit(EventType.TASK_CREATED, f"Judge: planner={d.planner}, relevance: {rel.reason}",
                 dispatch=d.to_dict(), signals=rel.signals)
 
-        # 1. Plan (model call one), unless the judge found it cached.
         cache_hit: str | None = None
         if d.planner == "cache" and pinned is None:
             parsed = self.judge.cached_plan(question, state.turns) or {}
@@ -143,7 +126,6 @@ class Pipeline:
             return self._refuse(rc, scope, parsed.get("reason"))
         rc.emit(EventType.SCOPE_CHECKED, "In scope")
 
-        # 2. Validate against the closed schema.
         try:
             plan = self.planner.materialise(parsed, state)
         except ValidationError as e:
@@ -153,9 +135,6 @@ class Pipeline:
                 message="I couldn't turn that into a query I can run safely. "
                         "Rather than guess at what you meant, I'd rather stop here.")
 
-        # A follow-up that yields an identical plan means coreference failed.
-        # Answering would re-report the SAME figure under the new question's
-        # framing, which is the most misleading thing this system could do.
         if (state.last_plan is not None
                 and plan.fingerprint() == state.last_plan.fingerprint()):
             rc.emit(EventType.CLARIFICATION_REQUIRED, "Follow-up did not change the query")
@@ -170,7 +149,6 @@ class Pipeline:
                 intent=plan.intent.value, metric=plan.metric.value,
                 group_by=plan.group_by.value)
 
-        # 3. Resolve the vendor deterministically. Ambiguity asks, never guesses.
         entity_match = entity_score = None
         if plan.vendor_name and not plan.vendor_id:
             outcome = self._resolve_vendor(plan, rc)
@@ -186,11 +164,7 @@ class Pipeline:
 
     def run_resolved(self, vendor_id: str, state: ConversationState,
                      model_choice: str | None = None) -> AssistantResponse:
-        """Complete a plan parked on a vendor clarification.
-
-        The user picked an option, so the entity is now certain: pin it on the
-        parked plan and run the rest of the pipeline. No second planning call.
-        """
+        """Complete a plan parked on a vendor clarification without a second planning call."""
         rc = RunContext(run_id=f"run_{uuid.uuid4().hex[:12]}",
                         conversation_id=state.conversation_id, on_event=self.on_event)
         plan, question = state.pending_plan, state.pending_question
@@ -231,10 +205,11 @@ class Pipeline:
     def _execute(self, question: str, state: ConversationState, rc: RunContext,
                  plan, entity_match, entity_score, pinned,
                  dispatch: Dispatch, cache_hit: str | None) -> AssistantResponse:
-        """Everything after the entity is certain: dates, compile, query,
-        verify, evidence, compose."""
+        """Dates, compile, query, verify, evidence, compose.
 
-        # 4. Resolve dates against the DATASET, not today.
+        Relative periods anchor to the dataset's calendar, not today's date. Anomaly
+        figures are appended as facts so the callout is verifiable like the answer.
+        """
         was_relative = bool(plan.date_range and plan.date_range.relative)
         try:
             if plan.date_range:
@@ -251,7 +226,6 @@ class Pipeline:
         rc.emit(EventType.PLAN_VALIDATED, "Query plan validated",
                 fingerprint=plan.fingerprint())
 
-        # 4b. Judge: an identical validated plan was answered recently.
         hit = self.judge.cached_answer(plan.fingerprint()) if pinned is None else None
         if hit:
             rc.emit(EventType.TASK_CREATED, "Judge: answer reused from cache (0 tokens, no query)",
@@ -271,7 +245,6 @@ class Pipeline:
             self._judge_record(rc, resp, cache_hit="answer")
             return resp
 
-        # 5. Compile and execute. No model anywhere near this.
         try:
             cq = compile_plan(plan)
         except CompilationError as e:
@@ -292,7 +265,6 @@ class Pipeline:
         rc.emit(EventType.QUERY_EXECUTED, f"{len(result.rows)} rows returned",
                 duration_ms=result.duration_ms, rows_read=result.rows_read)
 
-        # 6. Verify. Blocking failures veto the answer entirely.
         rc.emit(EventType.VERIFICATION_STARTED, "Verifying result")
         vr = verif.verify(plan, rows, aggregate=aggregate,
                           dataset_min=self.ctx.calendar.min_date,
@@ -320,7 +292,6 @@ class Pipeline:
                         "figure to report.",
                 capabilities=CAPABILITIES)
 
-        # 7. Evidence and confidence.
         evidence = self.evidence.build(rc, plan, cq, result, aggregate, rows, vr)
         evidence.confidence = conf.compute(
             plan, vr, entity_match=entity_match, entity_score=entity_score or 1.0,
@@ -331,7 +302,6 @@ class Pipeline:
                 f"({evidence.confidence.score:.0%})",
                 score=evidence.confidence.score, signals=evidence.confidence.signals)
 
-        # 8. Judge: template or model; and whether an anomaly agent is worth it.
         d2 = self.judge.dispatch_answering(plan, evidence, dispatch)
         rc.emit(EventType.TASK_CREATED,
                 f"Judge: composer={d2.composer}{', anomaly agent' if d2.anomaly else ''}",
@@ -356,9 +326,6 @@ class Pipeline:
                         "Anomaly check: " + ("unusual" if a.flagged else "within normal range"),
                         flagged=a.flagged, ratio=a.ratio, z=a.z, history_months=a.history_months)
                 if a.sentence:
-                    # Every figure in the sentence becomes a fact, so the callout is as
-                    # traceable as the answer it accompanies and the hallucination
-                    # detector can verify it rather than flag it.
                     from ..contracts.evidence import ComputedFact as _CF
                     evidence.facts.append(_CF(key="anomaly_ratio", value=a.ratio or 0.0, kind="ratio",
                                               formatted=f"{a.ratio:.1f}x" if a.ratio else "n/a"))
@@ -401,8 +368,6 @@ class Pipeline:
         except Exception:  # noqa: BLE001 -- scoring must never fail a run
             pass
 
-    # -- helpers -----------------------------------------------------------
-
     def _resolve_vendor(self, plan, rc: RunContext):
         """Returns (match_kind, score), or a finished response when it cannot."""
         res = resolve_vendor(plan.vendor_name, self.ctx.vendors)
@@ -442,13 +407,7 @@ class Pipeline:
         return res.kind, res.score
 
     def _refuse(self, rc: RunContext, scope: str, reason: str | None) -> AssistantResponse:
-        """A refusal is a steer, not a dead end.
-
-        The user-facing sentence is ours, fixed, and never the model's own
-        wording (the model's reason is kept in the event log for the pane).
-        Every refusal carries guided questions, so the chat keeps offering a
-        relevant next step until something actually runs.
-        """
+        """Refuse with a fixed message and guided questions; the model's reason goes to the log."""
         guide = Clarification(
             question="Ask about spend, payouts or reconciliation. For example:",
             field="guided",

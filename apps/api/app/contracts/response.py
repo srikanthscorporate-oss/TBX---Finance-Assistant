@@ -24,26 +24,26 @@ class Clarification(BaseModel):
 
     question: str
     options: list[ClarificationOption] = Field(default_factory=list)
-    field: str | None = None  # which plan field is ambiguous
+    field: str | None = None
 
 
 class AssistantResponse(BaseModel):
+    """`answer`, `evidence`, `plan` and `chart_hint` are set only for ANSWER; `clarification`
+    for CLARIFICATION_REQUIRED; `message` for DATA_UNAVAILABLE, OUT_OF_SCOPE and ERROR."""
+
     model_config = ConfigDict(extra="forbid")
 
     run_id: str
     conversation_id: str
     state: ResponseState
 
-    # Present only when state is ANSWER.
     answer: str | None = None
     evidence: EvidencePackage | None = None
     plan: FinanceQueryPlan | None = None
     chart_hint: str | None = None
 
-    # Present only when state is CLARIFICATION_REQUIRED.
     clarification: Clarification | None = None
 
-    # Present for DATA_UNAVAILABLE / OUT_OF_SCOPE / ERROR.
     message: str | None = None
     supported_capabilities: list[str] = Field(default_factory=list)
 

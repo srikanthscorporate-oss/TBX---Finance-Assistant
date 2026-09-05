@@ -1,4 +1,4 @@
-// Mirrors apps/api/app/contracts. Kept narrow: only what the UI renders.
+// Mirrors apps/api/app/contracts; only what the UI renders.
 
 export type ResponseState =
   | 'answer' | 'clarification_required' | 'data_unavailable' | 'out_of_scope' | 'error';

@@ -16,7 +16,6 @@ const STATE_LABEL: Record<string, string> = {
   data_unavailable: 'Data absent', out_of_scope: 'Out of scope', error: 'Error',
 };
 
-/** A stat with its recent trend beside it. The number is the point; the line is context. */
 function Tile({ label, value, unit, hint, series, tone }: {
   label: string; value: string; unit?: string; hint?: string; series?: number[];
   tone?: 'good' | 'warning' | 'critical';
@@ -111,7 +110,6 @@ export default function Observability({ initialUsage, initialEvals, initialJudge
 
   return (
     <div className="space-y-4">
-      {/* 1. The numbers that matter, each with its trend ------------------ */}
       <Panel>
         <PanelHead title="This session" meta={noRuns ? undefined : `${usage!.runs} runs`}
           actions={<button onClick={load} aria-label="Refresh metrics"
@@ -135,7 +133,6 @@ export default function Observability({ initialUsage, initialEvals, initialJudge
         )}
       </Panel>
 
-      {/* 2. Time and models --------------------------------------------- */}
       {!noRuns && (
         <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
           <ChartFrame title="Where the time goes" hint="Model calls against database work against everything else, summed across the session.">
@@ -157,10 +154,8 @@ export default function Observability({ initialUsage, initialEvals, initialJudge
         </div>
       )}
 
-      {/* 3. Evaluation --------------------------------------------------- */}
       {evals?.available ? (() => {
-        // The measurement is the last CLEAN run. A throttled attempt is shown
-        // as an attempt, never as the pipeline's accuracy.
+        // A throttled attempt is not a measurement; report the last clean run.
         const clean = evals.last_clean && !evals.last_clean.throttled ? evals.last_clean : (evals.throttled ? null : evals);
         const eff = clean?.efficiency;
         return (
@@ -243,7 +238,6 @@ export default function Observability({ initialUsage, initialEvals, initialJudge
                  body={evals?.hint ?? 'Run scripts/run_evaluation.py to measure accuracy and efficiency.'} /></Panel>
       )}
 
-      {/* 4. The judge ----------------------------------------------------- */}
       {judge?.enabled && (
         <div className="grid gap-4 lg:grid-cols-[1fr_1.4fr]">
           <ChartFrame title="Judge" hint="Scores every run, caches plans and answers, breaks circuits on rate limits, and steers Auto toward the model producing valid plans.">
@@ -310,7 +304,6 @@ export default function Observability({ initialUsage, initialEvals, initialJudge
         </div>
       )}
 
-      {/* 5. Recent runs -------------------------------------------------- */}
       {!noRuns && (
         <Panel>
           <PanelHead title="Recent runs" meta="newest first; operational fields only, never financial data" />

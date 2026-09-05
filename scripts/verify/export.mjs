@@ -29,15 +29,10 @@ const recordSum = rows.reduce((a, r) => a + Number(r.record_count), 0);
 if (recordSum !== expected.count)
   fail('G7', `export record counts sum to ${recordSum}, expected ${expected.count}`);
 
-// An invalid export request must be refused, not silently coerced.
-// Note: vendor_spend grouped BY vendor with no named vendor is legitimate
-// (spend across all vendors), so that is not the case to test. Ungrouped
-// vendor_spend with no vendor names no entity at all and must be refused.
+// Ungrouped vendor_spend with no vendor is invalid; grouped by vendor with no vendor is legitimate.
 const bad = await fetch(`${API}/api/v1/export.csv?intent=vendor_spend&group_by=none&relative=last_month`);
 if (bad.ok) fail('G7', 'ungrouped vendor_spend export with no vendor was accepted');
 
-// And the legitimate grouped form must still work, or the refusal above would
-// just be over-restriction rather than validation.
 const grouped = await fetch(`${API}/api/v1/export.csv?intent=vendor_spend&group_by=vendor&relative=last_month`);
 if (!grouped.ok) fail('G7', `grouped vendor_spend export was wrongly refused (${grouped.status})`);
 

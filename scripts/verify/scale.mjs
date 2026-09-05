@@ -1,7 +1,4 @@
-// G14: the 20M-record test limit from Section 7. The scale database holds at
-// least 20M transactions, referential integrity is clean, and every compiler-
-// shaped query answers within budget. Measured with ClickHouse's own timing,
-// not a copied number.
+// G14: the scale database holds >=20M transactions and every compiler-shaped query is in budget.
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, pass, fail } from './_lib.mjs';
@@ -10,7 +7,7 @@ const CH = process.env.CH_URL || 'http://localhost:18123';
 const AUTH = `user=${process.env.CH_ADMIN_USER || 'tbx_admin'}&password=${process.env.CH_ADMIN_PASSWORD || 'change-me-admin'}`;
 const DB = 'tbx_finance_scale';
 const REQUIRED_ROWS = 20_000_000;
-const BUDGET_MS = 500;   // per query; the API's own timeout is 10s, so this is strict
+const BUDGET_MS = 500;   // per query
 
 async function q(sql) {
   const r = await fetch(`${CH}/?${AUTH}&default_format=JSON`, { method: 'POST', body: sql });
@@ -22,7 +19,6 @@ async function q(sql) {
 const count = Number((await q(`SELECT count() AS n FROM ${DB}.transactions`)).rows[0].n);
 if (count < REQUIRED_ROWS) fail('G14', `scale table has ${count.toLocaleString()} rows, need ${REQUIRED_ROWS.toLocaleString()}`);
 
-// The load must have finished cleanly, with the report the loader writes.
 const reportPath = path.join(ROOT, 'data/processed/data_quality_20m.json');
 if (!fs.existsSync(reportPath)) fail('G14', 'no data-quality report for the scale load');
 const rep = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
@@ -30,7 +26,6 @@ if (rep.referential_problems?.length) fail('G14', `referential problems: ${rep.r
 const txn = rep.tables.find(t => t.file === 'transactions.csv');
 if (!txn || txn.duplicate_ids !== 0) fail('G14', `duplicate ids in scale load: ${txn?.duplicate_ids}`);
 
-// Every shape the compiler emits, at full scale.
 const shapes = [
   ['vendor spend, one month', `SELECT sum(amount) v, count() c FROM ${DB}.transactions WHERE txn_date BETWEEN '2026-07-01' AND '2026-07-31' AND vendor_id='V1001'`],
   ['top vendors, one month',  `SELECT vendor_id, sum(amount) v, count() c FROM ${DB}.transactions WHERE txn_date BETWEEN '2026-07-01' AND '2026-07-31' GROUP BY vendor_id ORDER BY v DESC LIMIT 10`],
@@ -47,11 +42,9 @@ for (const [label, sql] of shapes) {
   timings.push(`${label}: ${ms.toFixed(1)}ms (read ${read.toLocaleString()})`);
 }
 
-// Partition pruning must actually work: a one-month query must not scan the table.
 const pruned = await q(`SELECT count() c FROM ${DB}.transactions WHERE txn_date BETWEEN '2026-07-01' AND '2026-07-31'`);
 if (pruned.read > count / 4) fail('G14', `one-month query read ${pruned.read.toLocaleString()} of ${count.toLocaleString()} rows: partition pruning not effective`);
 
-// And the live golden dataset must be untouched by the scale load.
 const live = Number((await q(`SELECT count() AS n FROM tbx_finance.transactions`)).rows[0].n);
 if (live !== 3373) fail('G14', `live dataset was disturbed by the scale load: ${live} rows`);
 

@@ -1,17 +1,5 @@
 'use client';
 
-/**
- * Chart primitives.
- *
- * Colour is assigned by the job it does, never by taste:
- *   one measure across categories -> the sequential green ramp (magnitude)
- *   distinct entities            -> the categorical slots, capped at three
- *   state                        -> the fixed status tokens, with a label
- * Every colour is a token, validated in both themes. "Pop" comes from motion,
- * hierarchy and richer marks: same-hue gradients, draw-in animation, direct
- * value labels, ring sweeps and gauges. Never from a new hue or a glow.
- */
-
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, LabelList, ResponsiveContainer,
   Tooltip, XAxis, YAxis,
@@ -22,7 +10,7 @@ import { useReducedMotion } from '@/lib/motion';
 export const SEQ = ['var(--seq-1)', 'var(--seq-2)', 'var(--seq-3)', 'var(--seq-4)', 'var(--seq-5)', 'var(--seq-6)'];
 export const CAT = ['var(--cat-1)', 'var(--cat-2)', 'var(--cat-3)'];
 
-/** Darkest step for the largest value, so magnitude reads as ink weight. */
+/** Darkest ramp step for the largest value. */
 export function seqColor(index: number, total: number): string {
   if (total <= 1) return SEQ[4];
   const t = index / Math.max(total - 1, 1);
@@ -46,7 +34,6 @@ function TooltipBox({ active, payload, label, format }: any) {
   );
 }
 
-/** Same-hue vertical/horizontal gradient: two steps of one ramp, never two hues. */
 function SeqGradient({ id, horizontal }: { id: string; horizontal?: boolean }) {
   return (
     <defs>
@@ -118,7 +105,6 @@ export function BarSeries({ data, format, height = 200, horizontal = false, show
   );
 }
 
-/** Change over time as a line with a soft area beneath it: one series, one hue. */
 export function LineSeries({ data, format, height = 200 }: {
   data: { label: string; value: number }[]; format?: (n: number) => string; height?: number;
 }) {
@@ -143,7 +129,6 @@ export function LineSeries({ data, format, height = 200 }: {
   );
 }
 
-/** A number that has just changed counts up to its value. */
 function useCountUp(target: number, ms = 800): number {
   const reduced = useReducedMotion();
   const [v, setV] = useState(reduced ? target : 0);
@@ -160,11 +145,7 @@ function useCountUp(target: number, ms = 800): number {
   return v;
 }
 
-/**
- * Part-to-whole for two or three segments, drawn as a sweep. Capped at three
- * on purpose: beyond that the palette stops being separable for colourblind
- * readers. Status use takes the status tokens with a label in the legend.
- */
+/** Part-to-whole ring; capped at three segments so the palette stays colourblind-separable. */
 export function RingChart({ parts, centre, sub, size = 140, status = false, thickness = 12 }: {
   parts: { label: string; value: number }[];
   centre: string; sub?: string; size?: number; status?: boolean; thickness?: number;
@@ -178,7 +159,7 @@ export function RingChart({ parts, centre, sub, size = 140, status = false, thic
   let offset = 0;
   const arcs = parts.slice(0, 3).map((p, i) => {
     const frac = p.value / total;
-    const dash = Math.max(0, frac * circ - 3);   // 3px surface gap between fills
+    const dash = Math.max(0, frac * circ - 3); // 3px gap between fills
     const el = (
       <circle key={p.label} cx={c} cy={c} r={r} fill="none" stroke={palette[i]} strokeWidth={thickness}
         strokeLinecap="round"
@@ -213,10 +194,7 @@ export function RingChart({ parts, centre, sub, size = 140, status = false, thic
   );
 }
 
-/**
- * A rate as a 270-degree gauge with ticks and a sweeping fill. For a single
- * percentage the gauge reads faster than a ring: the arc's angle IS the value.
- */
+/** A rate as a 270-degree gauge. */
 export function RadialGauge({ value, label, size = 168, tone = 'seq', caption }: {
   value: number; label: string; size?: number; tone?: 'seq' | 'status'; caption?: string;
 }) {
@@ -260,10 +238,7 @@ export function RadialGauge({ value, label, size = 168, tone = 'seq', caption }:
   );
 }
 
-/**
- * Where the time went: one stacked bar, three phases, labelled inside the
- * segment when there is room. Model (cat-1), database (cat-2), the rest (cat-3).
- */
+/** Latency split as one stacked bar: model, database, the rest. */
 export function TimingBar({ llm, query, other, height = 14 }: {
   llm: number; query: number; other: number; height?: number;
 }) {
@@ -306,7 +281,6 @@ export function TimingBar({ llm, query, other, height = 14 }: {
   );
 }
 
-/** A trend line with a soft area, drawn in. One series: no legend, no axis. */
 export function Sparkline({ values, width = 110, height = 32, tone = 'var(--seq-5)' }: {
   values: number[]; width?: number; height?: number; tone?: string;
 }) {
@@ -339,10 +313,7 @@ export function Sparkline({ values, width = 110, height = 32, tone = 'var(--seq-
   );
 }
 
-/**
- * Confidence signals as a dot matrix: five dots per signal, filled to its
- * score, rows labelled so the shape never rests on colour alone.
- */
+/** Confidence signals as five dots per row, filled to the score. */
 export function SignalDots({ signals }: { signals: Record<string, number> }) {
   return (
     <ul className="grid grid-cols-1 gap-y-2 sm:grid-cols-2 sm:gap-x-6">

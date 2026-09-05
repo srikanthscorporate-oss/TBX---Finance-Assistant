@@ -1,4 +1,4 @@
-"""Configuration. Every value comes from the environment; nothing is hardcoded."""
+"""Configuration, read from the environment."""
 from __future__ import annotations
 
 import os
@@ -14,6 +14,7 @@ def _int(name: str, default: int) -> int:
 
 @dataclass
 class Settings:
+    """`ch_user` is the read-only agent user; only the ingestion script uses the admin user."""
     env: str = field(default_factory=lambda: os.getenv("TBX_ENV", "development"))
     domain: str = field(default_factory=lambda: os.getenv("TBX_DOMAIN", "localhost"))
     dataset_version: str = field(default_factory=lambda: os.getenv("DATASET_VERSION", "unknown"))
@@ -21,8 +22,6 @@ class Settings:
     ch_host: str = field(default_factory=lambda: os.getenv("CH_HOST", "clickhouse"))
     ch_port: int = field(default_factory=lambda: _int("CH_PORT", 8123))
     ch_db: str = field(default_factory=lambda: os.getenv("CH_DB", "tbx_finance"))
-    # The API uses the read-only agent user in production. The admin user is only
-    # ever used by the ingestion script.
     ch_user: str = field(default_factory=lambda: os.getenv("CH_AGENT_USER", "tbx_agent"))
     ch_password: str = field(default_factory=lambda: os.getenv("CH_AGENT_PASSWORD", ""))
 

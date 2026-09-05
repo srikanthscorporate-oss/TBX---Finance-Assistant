@@ -1,10 +1,6 @@
 import type { AgentEvent } from './types';
 
-/**
- * The event stream is fine-grained; the operator wants six stages.
- * This folds raw events onto the pipeline's real phases so the right pane can
- * show progress that means something, rather than a scrolling log.
- */
+/** Folds the raw event stream onto six pipeline stages. */
 export const STAGES = [
   { key: 'understand', label: 'Understand',  events: ['run_started', 'scope_checked', 'intent_detected'] },
   { key: 'resolve',    label: 'Resolve',     events: ['entity_resolved', 'dates_resolved'] },
@@ -34,9 +30,7 @@ export function buildStages(events: AgentEvent[], running: boolean): StageState[
   let openStage: string | null = null;
   for (const e of events) {
     const stage = STAGES.find(s => (s.events as readonly string[]).includes(e.type));
-    // Fallback and escalation events belong to whichever stage was running when
-    // they fired, so attach them there rather than dropping them. Escalation is
-    // a headline efficiency signal; it must never disappear from the timeline.
+    // Fallback and judge events attach to whichever stage was open when they fired.
     const floating = e.type.startsWith('fallback_') || e.type === 'task_created' || e.type === 'tool_completed';
     const key = stage?.key ?? (floating ? (openStage ?? 'understand') : null);
     if (!key) continue;
@@ -48,13 +42,10 @@ export function buildStages(events: AgentEvent[], running: boolean): StageState[
 
   const failed = events.some(e => e.type === 'run_failed');
   const stopped = events.some(e => TERMINAL.has(e.type));
-  // Which stage is furthest along?
   const lastIndex = STAGES.reduce(
     (acc, s, i) => (byStage.has(s.key) ? i : acc), -1);
 
-  // A stage exists in the rail only once it has started. Skipped stages
-  // (a refusal never queries) simply never appear, and the only stage that
-  // can be active is the last one seen while the run is still going.
+  // Stages that never started are omitted rather than shown as skipped.
   return STAGES.flatMap((s, i) => {
     const evs = byStage.get(s.key) ?? [];
     if (!evs.length) return [];
@@ -67,12 +58,10 @@ export function buildStages(events: AgentEvent[], running: boolean): StageState[
   });
 }
 
-/** Human label for the stage an event belongs to, for the live indicator. */
 export function stageOf(type: string): string | null {
   return STAGES.find(s => (s.events as readonly string[]).includes(type))?.label ?? null;
 }
 
-/** Human-readable facts pulled out of a stage's events, for the detail rows. */
 export function stageDetail(stage: StageState): [string, string][] {
   const out: [string, string][] = [];
   for (const e of stage.events) {

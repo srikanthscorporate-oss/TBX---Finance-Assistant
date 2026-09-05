@@ -1,9 +1,7 @@
-"""Redis access, with one rule: the cache is never allowed to fail a request.
+"""Redis access.
 
-Every method degrades to a no-op when Redis is unreachable, so an outage costs
-the optimisation (a few hundred tokens, a few hundred milliseconds) and never
-the answer. Keys carry the dataset version, so a reload invalidates everything
-that depended on the old rows without any explicit flush.
+Every method degrades to a no-op when Redis is unreachable. Keys carry the
+dataset version, so a reload invalidates old entries without a flush.
 """
 from __future__ import annotations
 
@@ -42,7 +40,6 @@ class Cache:
     def _k(self, *parts: str) -> str:
         return ":".join((self.prefix, *parts))
 
-    # -- json documents ----------------------------------------------------
     def get_json(self, *parts: str) -> Any | None:
         if not self._r:
             return None
@@ -68,7 +65,6 @@ class Cache:
             except Exception:  # noqa: BLE001
                 pass
 
-    # -- counters and windows ---------------------------------------------
     def incr(self, *parts: str, ttl: int | None = None) -> int:
         if not self._r:
             return 0
@@ -112,7 +108,6 @@ class Cache:
         except Exception:  # noqa: BLE001
             return False
 
-    # -- bounded lists -----------------------------------------------------
     def push(self, *parts: str, value: Any, keep: int = 500) -> None:
         if not self._r:
             return

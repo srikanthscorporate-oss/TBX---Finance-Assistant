@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""Independent cross-validation of the query compiler.
+"""Cross-checks compile_plan() -> ClickHouse against a naive loop over data/raw CSVs.
 
-For each plan we compute the expected answer TWICE, by paths that share no code:
-  A. compile_plan() -> ClickHouse
-  B. a naive loop over the source CSVs in pure Python
-
-If these disagree, the compiler is wrong. This is the check that would have
-caught a bad WHERE clause, an off-by-one month boundary, or a wrong GROUP BY --
-the failure modes that produce a confident, wrong financial answer.
+The two paths share no code. Prints "N/N checks passed" and exits non-zero on any mismatch.
 """
 from __future__ import annotations
 
@@ -79,14 +73,12 @@ def main() -> int:
     failures = 0
     cases = []
 
-    # 1. Total spend, last month (relative -> dataset-anchored)
     dr = resolve(DateRange(relative="last_month"), CAL)
     plan = FinanceQueryPlan(intent=Intent.TOTAL_SPEND, date_range=dr, metric=Metric.SUM)
     rows = py_filter(TXNS, date_col="txn_date", start=dr.resolved_start, end=dr.resolved_end)
     cases.append(("total spend, last month", plan,
                   sum(float(r["amount"]) for r in rows), len(rows)))
 
-    # 2. Vendor spend, last month
     dr2 = resolve(DateRange(relative="last_month"), CAL)
     plan = FinanceQueryPlan(intent=Intent.VENDOR_SPEND, vendor_name="Acme Technologies",
                             vendor_id="V1001", date_range=dr2, metric=Metric.SUM)
@@ -95,13 +87,11 @@ def main() -> int:
     cases.append(("Acme Technologies spend, last month", plan,
                   sum(float(r["amount"]) for r in rows), len(rows)))
 
-    # 3. Unreconciled count, all time
     plan = FinanceQueryPlan(intent=Intent.UNRECONCILED, metric=Metric.COUNT, limit=1000)
     rows = py_filter(TXNS, date_col="txn_date",
                      recon_in={"unmatched", "pending", "disputed"})
     cases.append(("unreconciled transactions (detail)", plan, None, len(rows)))
 
-    # 4. Category spend
     dr3 = resolve(DateRange(relative="last_quarter"), CAL)
     plan = FinanceQueryPlan(intent=Intent.CATEGORY_SPEND, category="Marketing",
                             date_range=dr3, metric=Metric.SUM)
@@ -110,7 +100,6 @@ def main() -> int:
     cases.append(("Marketing spend, last quarter", plan,
                   sum(float(r["amount"]) for r in rows), len(rows)))
 
-    # 5. Reconciliation rate
     dr4 = resolve(DateRange(relative="last_6_months"), CAL)
     plan = FinanceQueryPlan(intent=Intent.RECONCILIATION_RATE, date_range=dr4)
     rows = py_filter(TXNS, date_col="txn_date", start=dr4.resolved_start, end=dr4.resolved_end)
@@ -118,7 +107,6 @@ def main() -> int:
     rate = round(100.0 * matched / len(rows), 2) if rows else 0
     cases.append(("reconciliation rate, last 6 months", plan, rate, len(rows)))
 
-    # 6. Vendor payouts
     dr5 = resolve(DateRange(relative="last_month"), CAL)
     plan = FinanceQueryPlan(intent=Intent.VENDOR_PAYOUTS, vendor_name="Globex Software",
                             vendor_id="V1005", date_range=dr5, metric=Metric.SUM)
@@ -149,8 +137,6 @@ def main() -> int:
         if status == "FAIL":
             print(f"        SQL: {cq.sql}\n        PARAMS: {cq.params}")
 
-    # 7. Grouped: top vendors must sum to the ungrouped total (the aggregate /
-    #    breakdown consistency the verifier asserts at runtime).
     dr6 = resolve(DateRange(relative="last_month"), CAL)
     gplan = FinanceQueryPlan(intent=Intent.TOP_VENDORS, date_range=dr6,
                              metric=Metric.SUM, group_by=GroupBy.VENDOR, limit=100)

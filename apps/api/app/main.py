@@ -24,12 +24,11 @@ log = logging.getLogger("tbx.api")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Start even when startup fails so /health can report the reason instead of crash-looping."""
     try:
         startup()
         log.info("startup complete (dataset %s)", app_state.ctx.dataset_version)
     except Exception as e:  # noqa: BLE001
-        # Start anyway so /health can report the failure rather than the
-        # container crash-looping with the reason buried in logs.
         log.error("startup failed: %s", e)
     yield
 
@@ -53,19 +52,16 @@ if settings.allowed_origins:
         allow_headers=["content-type"],
     )
 
-# --- Rate limiting --------------------------------------------------------
-# Simple in-process limiter. Cloudflare does the real work at the edge; this
-# protects the LLM budget if something gets past it.
 _hits: dict[str, deque] = defaultdict(deque)
+"""In-process fallback limiter; Cloudflare does the real work at the edge."""
 
 
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
+    """Redis fixed window so the limit holds across replicas; the deque is the fallback."""
     if request.url.path.startswith("/api/v1/chat"):
         client = request.headers.get("cf-connecting-ip") or (
             request.client.host if request.client else "unknown")
-        # Redis-backed fixed window so the limit holds across replicas; the
-        # in-process deque is only the fallback when Redis is unavailable.
         count = app_state.cache.incr("ratelimit", client, str(int(time.time() // 60)), ttl=70) \
             if app_state.cache and app_state.cache.enabled else 0
         if not count:
@@ -103,6 +99,8 @@ app.include_router(models.router)
 
 @app.get("/health")
 async def health():
+    """`planner` is "stub" when the offline planner is wired in; such runs measure
+    the deterministic pipeline, not real NLU."""
     ready = app_state.ready
     body = {
         "status": "ok" if ready else "degraded",
@@ -113,8 +111,6 @@ async def health():
             f"{app_state.ctx.calendar.min_date}..{app_state.ctx.calendar.max_date}"
             if app_state.ctx else None),
         "vendors": len(app_state.ctx.vendors) if app_state.ctx else 0,
-        # "stub" means the offline planner is wired in -- evaluation numbers
-        # from such a run measure the deterministic pipeline, not real NLU.
         "planner": "stub" if os.getenv("TBX_USE_STUB_LLM") == "1" else "model",
     }
     return JSONResponse(body, status_code=200 if ready else 503)

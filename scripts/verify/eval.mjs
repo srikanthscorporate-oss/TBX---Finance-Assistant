@@ -1,5 +1,4 @@
-// G5: a golden set of >=50 questions exists and the runner measures accuracy
-// against independently computed expectations, writing a categorised report.
+// G5: a golden set of >=50 questions exists and the runner writes a categorised report.
 import fs from 'node:fs';
 import path from 'node:path';
 import { run } from './_run.mjs';
@@ -18,8 +17,6 @@ for (const required of ['exact', 'vendor', 'date', 'grouping', 'reconciliation',
                         'adversarial'])
   if (!cats.has(required)) fail('G5', `golden set missing category: ${required}`);
 
-// Every question must declare an expectation; a question that cannot fail is
-// not a test.
 for (const q of golden) {
   if (!q.expected_state && !q.acceptable_states)
     fail('G5', `${q.id} declares no expected state`);
@@ -36,7 +33,6 @@ if (!fs.existsSync(reportPath)) fail('G5', 'no report written');
 const rep = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
 
 if (rep.turns !== turns) fail('G5', `report covers ${rep.turns} turns, golden set has ${turns}`);
-// Say the true thing first: a throttled run is a quota event, not a metric bug.
 if (rep.throttled)
   fail('G5', `throttled run: ${rep.rate_limited_calls} rate-limited calls or turns; overall ${(rep.overall_accuracy * 100).toFixed(1)}% is a quota event, not a measurement. Re-run when quota has recovered.`);
 if (rep.transport_errors) fail('G5', `${rep.transport_errors} turns failed to reach the API`);
@@ -49,7 +45,6 @@ if (!rep.efficiency || typeof rep.efficiency.avg_tokens_per_turn !== 'number')
   fail('G5', 'report lacks efficiency metrics');
 if (!rep.planner) fail('G5', 'report does not record which planner produced it');
 
-// Guard the headline: grounding and hallucination are the scored properties.
 if (rep.grounding_rate < 1) fail('G5', `grounding rate ${rep.grounding_rate} < 1.0`);
 if (rep.hallucination_free_rate < 1)
   fail('G5', `hallucination-free rate ${rep.hallucination_free_rate} < 1.0`);

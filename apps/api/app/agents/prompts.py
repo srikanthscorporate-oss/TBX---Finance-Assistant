@@ -1,5 +1,4 @@
-"""Prompt loading. Prompts live in /prompts as versioned markdown, never as
-giant string literals scattered through Python."""
+"""Loads versioned prompt markdown from /prompts."""
 from __future__ import annotations
 
 import os
@@ -8,12 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 
 def _find_prompt_dir() -> Path:
-    """Locate the prompts directory.
-
-    Explicit env var wins; otherwise walk upward from this file looking for a
-    `prompts/` directory. Indexing a fixed number of parents broke as soon as
-    the package was copied to a different depth inside the container.
-    """
+    """TBX_PROMPT_DIR wins; otherwise walk up from this file, since the package depth varies."""
     env = os.getenv("TBX_PROMPT_DIR")
     if env:
         return Path(env)
@@ -37,20 +31,14 @@ def load(name: str) -> tuple[str, str]:
     path = PROMPT_DIR / f"{name}.md"
     text = path.read_text()
     parts = _SECTION_RE.split(text)
-    # parts = [preamble, 'System', system_body, 'User', user_body]
     sections = {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
     return sections.get("System", "").strip(), sections.get("User", "").strip()
 
 
 def fill(template: str, **values: object) -> str:
-    """Substitute {{key}} tokens. Unknown tokens are left untouched so the
-    composer's own placeholder vocabulary survives this pass."""
+    """Substitute {{key}} tokens; unknown tokens stay so composer placeholders survive."""
     out = template
     for k, v in values.items():
         out = out.replace("{{" + k + "}}", str(v))
     return out
-
-
-
-# follow up and segregation of token val: pair with loop relevance
 

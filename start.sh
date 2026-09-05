@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
-# StrawHat Finance Assistant: install what the OS needs, then start everything.
-#
+# Usage:
 #   ./start.sh            start (installs Docker if missing, loads data if empty)
 #   ./start.sh --prod     also start the Cloudflare tunnel (needs CLOUDFLARE_TUNNEL_TOKEN)
 #   ./start.sh --stop     stop all services (data volumes are kept)
 #   ./start.sh --logs     follow api + web logs
-#
-# Supported: Ubuntu 24.04 (VPS), macOS on Apple Silicon or Intel, Windows via
-# Git Bash or WSL. The host needs only Docker (with the Compose plugin), git and
-# curl. Python, uv and Node are NOT required on the host: dataset scripts run in
-# a throwaway Python container and the web build happens inside its image.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -21,7 +15,6 @@ warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# ---- 1. Detect the platform ----------------------------------------------
 OS="unknown"
 case "$(uname -s)" in
   Linux*)
@@ -37,7 +30,6 @@ if [ "$OS" = "linux" ] || [ "$OS" = "wsl" ]; then
   [ "$(id -u)" -eq 0 ] || SUDO="sudo"
 fi
 
-# ---- 2. Install Docker if it is missing ----------------------------------
 install_docker() {
   case "$OS" in
     linux|wsl)
@@ -73,7 +65,6 @@ install_docker() {
 if ! have docker; then install_docker; fi
 have docker || die "docker not found after install; open a new shell and re-run"
 
-# ---- 3. Make sure the daemon is running ----------------------------------
 if ! docker info >/dev/null 2>&1; then
   case "$OS" in
     mac)     say "starting Docker Desktop"; open -a Docker ;;
@@ -86,7 +77,6 @@ if ! docker info >/dev/null 2>&1; then
 fi
 docker compose version >/dev/null 2>&1 || die "the Docker Compose plugin is missing (docker compose version)"
 
-# ---- 4. Control modes ----------------------------------------------------
 case "$MODE" in
   --stop) say "stopping services (volumes kept)"; docker compose --profile prod stop; exit 0 ;;
   --logs) exec docker compose logs -f api web ;;
@@ -94,7 +84,6 @@ case "$MODE" in
   *) die "unknown option: $MODE (use --prod, --stop, --logs)" ;;
 esac
 
-# ---- 5. Configuration ----------------------------------------------------
 if [ ! -f .env ]; then
   cp .env.example .env
   say "created .env from .env.example"
@@ -109,7 +98,7 @@ if [ "$MODE" = "--prod" ] && ! grep -qE '^CLOUDFLARE_TUNNEL_TOKEN=.+' .env; then
   die "--prod needs CLOUDFLARE_TUNNEL_TOKEN in .env"
 fi
 
-# Git Bash mounts need Windows-style paths and no MSYS path mangling.
+# Git Bash mounts need Windows-style paths without MSYS path mangling.
 if [ "$OS" = "gitbash" ]; then
   export MSYS_NO_PATHCONV=1
   HOSTROOT="$(pwd -W)"
@@ -117,7 +106,6 @@ else
   HOSTROOT="$ROOT"
 fi
 
-# ---- 6. Data tier ---------------------------------------------------------
 say "starting ClickHouse, Postgres, Redis"
 docker compose up -d clickhouse postgres redis
 say "waiting for ClickHouse"
@@ -127,9 +115,7 @@ for _ in $(seq 1 60); do
 done
 docker compose exec -T clickhouse wget -qO- http://127.0.0.1:8123/ping 2>/dev/null | grep -q Ok || die "ClickHouse did not become healthy"
 
-# The dataset scripts run in a container on the compose network, so the host
-# needs no Python. The real TBX CSVs go in data/raw; a stand-in is generated
-# only when nothing is there.
+# Dataset scripts run in a container on the compose network; the host needs no Python.
 NET="$(docker network ls --format '{{.Name}}' | grep -E '_data$' | head -1)"
 PYRUN() { docker run --rm --network "$NET" -v "${HOSTROOT}:/w" -w /w python:3.12-slim python "$@"; }
 
@@ -146,7 +132,6 @@ else
   say "dataset already loaded (${ROWS} transactions)"
 fi
 
-# ---- 7. Application tier ----------------------------------------------------
 say "building and starting api, web, nginx"
 docker compose up -d --build api web nginx
 if [ "$MODE" = "--prod" ]; then

@@ -7,7 +7,6 @@ export const metadata = {
   description: 'Token spend, latency, model mix and evaluation accuracy for the assistant.',
 };
 
-// Always render fresh: these are live operational counters.
 export const dynamic = 'force-dynamic';
 
 export default async function Page() {

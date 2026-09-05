@@ -1,14 +1,9 @@
-"""Closed vocabularies. The planner LLM may only emit values from these enums.
-
-Anything outside these sets fails Pydantic validation before it can reach the
-query compiler, which is the first of the grounding guardrails.
-"""
+"""Closed vocabularies the planner may emit; anything else fails validation."""
 from enum import Enum
 
 
 class Intent(str, Enum):
-    """The supported question shapes. Deliberately a small, closed set --
-    the problem statement scopes us to spend, payouts and reconciliation."""
+    """Supported question shapes."""
 
     TOTAL_SPEND = "total_spend"
     VENDOR_SPEND = "vendor_spend"
@@ -79,7 +74,7 @@ class Direction(str, Enum):
 
 
 class ResponseState(str, Enum):
-    """Every question terminates in exactly one of these. See plan.md section 3."""
+    """Every turn ends in exactly one of these."""
 
     ANSWER = "answer"
     CLARIFICATION_REQUIRED = "clarification_required"

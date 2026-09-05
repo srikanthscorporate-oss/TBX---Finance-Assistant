@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The ERROR state: when the database cannot be queried we must refuse, not guess."""
+"""Runs the pipeline against a dead port and checks the turn ends in the error state with
+no answer, no evidence and no figure in the message. Prints ERROR_PATH_PASS."""
 from __future__ import annotations
 
 import sys
@@ -20,7 +21,6 @@ from stub_llm import stub_completion  # noqa: E402
 
 failures = []
 
-# Point at a port with nothing on it, so every query fails at transport level.
 ch = ClickHouseClient(host="127.0.0.1", port=9, user="x", password="y", timeout=2)
 ctx = DatasetContext(
     calendar=DatasetCalendar(min_date=date(2025, 1, 1), max_date=date(2026, 8, 28)),
@@ -39,12 +39,10 @@ if r.evidence is not None:
     failures.append("ERROR response carried an evidence package")
 if not r.message:
     failures.append("ERROR response had no explanatory message")
-# Crucially: no figure may appear in the failure message.
 import re  # noqa: E402
 if r.message and re.search(r"\d{3,}|[₹$€£]\s*\d", r.message):
     failures.append(f"ERROR message contains a figure: {r.message!r}")
 
-# A verification failure must also refuse rather than answer.
 print(f"error-path state: {r.state.value}")
 print(f"error-path message: {r.message}")
 

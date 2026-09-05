@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 
-/** True when the viewer asked for reduced motion. Charts then draw instantly. */
 export function useReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false);
   useEffect(() => {

@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# Tag and push both application images to Docker Hub.
-#
-#   docker login -u srikanthsdocker      # once, interactively
-#   ./scripts/push_images.sh             # tags <sha> and latest, pushes both
-#
-# Tags are applied by image ID so they work under Docker Desktop's containerd
-# image store, and the quoting avoids the zsh ":l" modifier trap.
+# Usage: docker login -u srikanthsdocker && ./scripts/push_images.sh
+# Tags by image ID so it works under Docker Desktop's containerd image store.
 set -euo pipefail
 NS="${DOCKER_NAMESPACE:-srikanthsdocker}"
 SHA="$(git rev-parse --short HEAD 2>/dev/null || echo manual)"

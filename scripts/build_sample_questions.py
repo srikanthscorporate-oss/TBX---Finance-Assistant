@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Generate docs/sample-questions.md from an actual evaluation run.
-
-A submission requirement asks for "sample questions and the corresponding
-answers produced by the assistant". Generating this from the real run means the
-document cannot drift from what the system actually does.
-"""
+"""Generate docs/sample-questions.md from the latest evaluation run."""
 from __future__ import annotations
 
 import json

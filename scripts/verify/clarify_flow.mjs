@@ -16,8 +16,7 @@ const logistics = opts.find(o => o.label === 'Acme Logistics');
 if (!logistics) fail('G17', `options lack Acme Logistics: ${opts.map(o => o.label)}`);
 if (/\d{4,}|[₹$]\s*\d/.test(step1.clarification.question)) fail('G17', 'clarification question contains a figure');
 
-// Step 2: answer by option id. No message text: the original question must
-// not be re-planned.
+// No message text: the original question must not be re-planned.
 const step2 = await post('/api/v1/chat', {
   message: '', conversation_id: step1.conversation_id, resolved_vendor_id: logistics.value,
 });
@@ -31,7 +30,6 @@ if (step2.evidence.total_record_count !== expected.count)
   fail('G17', `record count ${step2.evidence.total_record_count} != ${expected.count}`);
 if (!step2.evidence.verification.checks.length) fail('G17', 'no verification on the completed answer');
 
-// A second resolution with nothing pending must be refused, not re-answered.
 const step3 = await post('/api/v1/chat', {
   message: '', conversation_id: step1.conversation_id, resolved_vendor_id: logistics.value,
 });

@@ -1,12 +1,7 @@
 """Relative date resolution.
 
-CRITICAL: relative expressions resolve against the DATASET's anchor date (the
-maximum transaction date present in the data), not against today. The supplied
-dataset is historical; anchoring on wall-clock time makes every "last month"
-question return zero rows.
-
-The resolved absolute window is always echoed back to the user so the
-interpretation is auditable rather than implicit.
+Relative expressions anchor to the dataset's maximum transaction date, not
+today; the resolved window is echoed back to the user.
 """
 from __future__ import annotations
 
@@ -48,8 +43,7 @@ def _quarter_end(year: int, quarter: int) -> date:
 
 @dataclass(frozen=True)
 class DatasetCalendar:
-    """The dataset's own time bounds. Loaded once at startup and refreshed on
-    ingestion; every relative expression is resolved against `anchor`."""
+    """The dataset's time bounds; relative expressions resolve against `anchor`."""
 
     min_date: date
     max_date: date
@@ -63,20 +57,18 @@ class DatasetCalendar:
 
 
 class DateResolutionError(ValueError):
-    """Raised when a relative expression cannot be resolved. Never silently
-    falls back to a guess -- the caller turns this into DATA_UNAVAILABLE."""
+    """An unsupported relative expression; the caller turns this into DATA_UNAVAILABLE."""
 
 
 def resolve(dr: DateRange, cal: DatasetCalendar, *, clamp: bool = False) -> DateRange:
-    """Return a copy of `dr` with resolved_start/resolved_end/resolved_label set.
+    """Return a copy of `dr` with the resolved window and label set.
 
-    `clamp` is off by default: if a user asks for a window the dataset does not
-    cover we want the empty result to be visible (and reported as
-    DATA_UNAVAILABLE), not silently widened into a window that has data.
+    `clamp` is off by default so a window outside the dataset stays empty and
+    is reported as DATA_UNAVAILABLE rather than widened.
     """
     if dr.relative is None:
         start, end = dr.start, dr.end
-        assert start is not None and end is not None  # guaranteed by validator
+        assert start is not None and end is not None
         label = _label_for(start, end)
     else:
         start, end, label = _resolve_relative(dr.relative, cal)
@@ -153,10 +145,9 @@ def _label_for(start: date, end: date) -> str:
 
 
 def preceding_period(dr: DateRange, cal: DatasetCalendar) -> DateRange:
-    """The window immediately before a resolved one, of equal shape.
+    """The window immediately before a resolved one.
 
-    Powers "what about the month before?" and period comparisons. Whole calendar
-    months shift by one month; arbitrary windows shift by their own length.
+    Whole calendar months shift by one month; other windows by their own length.
     """
     if not dr.is_resolved:
         dr = resolve(dr, cal)

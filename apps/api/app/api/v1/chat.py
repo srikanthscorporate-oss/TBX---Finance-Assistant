@@ -1,5 +1,4 @@
-"""Chat endpoints: synchronous answer, and the SSE stream that drives the live
-agent timeline."""
+"""Chat endpoints: synchronous answer and the SSE stream behind the live agent timeline."""
 from __future__ import annotations
 
 import asyncio
@@ -20,17 +19,20 @@ router = APIRouter(prefix="/api/v1", tags=["chat"])
 
 
 class ChatRequest(BaseModel):
-    # Empty is allowed when answering a clarification by option id.
+    """One turn.
+
+    `resolved_vendor_id` answers a clarification by option id, in which case
+    `message` may be empty. `model` is "auto" or a catalog model id.
+    """
     message: str = Field(default="", max_length=2000)
     conversation_id: str | None = None
-    # Set when the user picks an option from a clarification prompt.
     resolved_vendor_id: str | None = None
-    # "auto" (policy routing) or a catalog model id chosen from the dropdown.
     model: str | None = "auto"
 
 
 @router.post("/chat", response_model=AssistantResponse)
 async def chat(req: ChatRequest) -> AssistantResponse:
+    """Answer one turn; a clarification reply completes the parked plan without re-planning."""
     if not app_state.ready:
         raise HTTPException(503, "dataset not loaded")
 
@@ -40,8 +42,6 @@ async def chat(req: ChatRequest) -> AssistantResponse:
     pipeline = app_state.pipeline()
     started = time.perf_counter()
     if req.resolved_vendor_id:
-        # The user answered a clarification: complete the parked plan with the
-        # chosen vendor. The original sentence is not re-planned.
         result = await asyncio.to_thread(pipeline.run_resolved, req.resolved_vendor_id,
                                          state, req.model)
     else:
@@ -54,9 +54,10 @@ async def chat(req: ChatRequest) -> AssistantResponse:
 
 @router.post("/chat/stream")
 async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
-    """Run the pipeline while streaming each auditable step to the client.
+    """Run the pipeline while streaming each step to the client.
 
-    Events describe actions and their outputs -- never model reasoning.
+    Events carry actions and their outputs, not model reasoning. The
+    X-Accel-Buffering header keeps nginx from buffering the stream.
     """
     if not app_state.ready:
         raise HTTPException(503, "dataset not loaded")
@@ -113,7 +114,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",   # nginx must not buffer SSE
+            "X-Accel-Buffering": "no",
         },
     )
 

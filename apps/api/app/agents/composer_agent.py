@@ -1,14 +1,7 @@
-"""Turning a verified evidence package into a sentence.
+"""Second model call: prose around {{placeholder}} keys, filled server-side from the evidence.
 
-Model call two of two, and the narrowest call in the system: the model gets a
-whitelist of placeholder keys and writes prose around them. It never sees a
-rendered figure it could copy incorrectly; the server substitutes verified
-values after generation.
-
-Recovery never goes to a larger model: retry the same model with the rejection
-reason, then a compliant alternate (auto mode only), then a deterministic
-template. A stilted sentence built from verified values beats a fluent one we
-cannot vouch for.
+A rejected draft is retried on the same model with the rejection reason, then on the
+alternate model (auto mode only), then replaced by a deterministic template.
 """
 from __future__ import annotations
 

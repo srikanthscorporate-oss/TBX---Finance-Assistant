@@ -1,5 +1,4 @@
-// G6: coreference over HTTP -- the follow-up shifts the period and keeps the vendor.
-// Expected figures are computed here from the CSVs, independently of the API.
+// G6: coreference over HTTP; the follow-up shifts the period and keeps the vendor.
 import { post, get, loadTransactions, sumWhere, pass, fail } from './_lib.mjs';
 
 const txns = loadTransactions();
@@ -30,16 +29,13 @@ const t2 = turn2.evidence.facts.find(f => f.key === 'total');
 if (Math.abs(Number(t2.value) - expB.total) > 0.02)
   fail('G6', `turn2 figure ${t2.value} != independent ${expB.total} for ${monthBefore}`);
 
-// The vendor must have been carried, not dropped.
 if (turn2.plan.vendor_id !== 'V1001')
   fail('G6', `vendor not carried into turn2: ${turn2.plan.vendor_id}`);
 if (turn2.evidence.entities_resolved.vendor_name !== 'Acme Technologies')
   fail('G6', 'vendor name lost in turn2');
-// The period must actually have moved.
 if (turn2.evidence.resolved_period === turn1.evidence.resolved_period)
   fail('G6', 'period did not shift');
 
-// A third turn changes the shape while keeping vendor and period.
 const turn3 = await post('/api/v1/chat',
   { message: 'Break that down by category', conversation_id: cid });
 if (turn3.state !== 'answer') fail('G6', `turn3 state=${turn3.state}`);

@@ -1,4 +1,3 @@
-// Shared helpers for gate verification scripts.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,7 +21,6 @@ export async function get(pathname) {
   return res.json();
 }
 
-// Parse a CSV into rows of objects. Handles quoted fields.
 export function parseCsv(text) {
   const rows = [];
   let field = '', row = [], inQuotes = false;
@@ -43,7 +41,6 @@ export function parseCsv(text) {
              .map(r => Object.fromEntries(header.map((h, i) => [h, r[i]])));
 }
 
-// Independent computation from the source CSVs -- shares no code with the app.
 export function loadTransactions() {
   return parseCsv(fs.readFileSync(path.join(ROOT, 'data/raw/transactions.csv'), 'utf8'));
 }

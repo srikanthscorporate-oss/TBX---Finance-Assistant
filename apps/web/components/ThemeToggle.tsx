@@ -32,7 +32,7 @@ export default function ThemeToggle() {
       className="grid h-8 w-8 place-items-center rounded-sm text-muted transition-colors
                  hover:bg-raised hover:text-ink"
     >
-      {/* Render nothing until mounted so server and client markup agree. */}
+      {/* Empty until mounted so server and client markup agree. */}
       {mode === 'dark' ? <Sun size={16} weight="bold" />
         : mode === 'light' ? <Moon size={16} weight="bold" /> : <span className="h-4 w-4" />}
     </button>

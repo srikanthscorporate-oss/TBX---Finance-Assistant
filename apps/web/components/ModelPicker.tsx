@@ -10,11 +10,7 @@ const STORAGE_KEY = 'tbx-model';
 const PROVIDER_ORDER = ['groq', 'openrouter', 'sarvam'] as const;
 const PROVIDER_LABEL: Record<string, string> = { groq: 'Groq', openrouter: 'OpenRouter', sarvam: 'Sarvam AI' };
 
-/**
- * A custom listbox rather than a native select: grouped by provider, free
- * models only (the API already filters), a fixed max height that scrolls, and
- * keyboard navigation. Auto stays first and is the recommended default.
- */
+/** Listbox of free models grouped by provider; Auto is first. */
 export default function ModelPicker({ value, onChange, disabled }: {
   value: string; onChange: (id: string) => void; disabled?: boolean;
 }) {
@@ -26,7 +22,6 @@ export default function ModelPicker({ value, onChange, disabled }: {
   useEffect(() => {
     getModels().then(cat => {
       setCatalog(cat);
-      // Restore the stored choice only if it is still a listed, available model.
       try {
         const s = localStorage.getItem(STORAGE_KEY);
         const ok = s === AUTO || cat.models.some(m => m.id === s && m.listed && m.available);
@@ -43,7 +38,6 @@ export default function ModelPicker({ value, onChange, disabled }: {
     return () => document.removeEventListener('mousedown', onDoc);
   }, [open]);
 
-  // Free models grouped by provider, in a fixed order. Nothing paid is served.
   const groups = useMemo(() => {
     const listed = (catalog?.models ?? []).filter(m => m.listed);
     return PROVIDER_ORDER
@@ -51,7 +45,7 @@ export default function ModelPicker({ value, onChange, disabled }: {
       .filter(g => g.models.length > 0);
   }, [catalog]);
 
-  // Sarvam shows as a group even before its key lands, so the user sees it.
+  // Sarvam is shown before its key is configured.
   const pendingSarvam = (catalog?.unlisted ?? []).filter(u => u.id.includes('sarvam'));
 
   const flat = useMemo(() => [AUTO, ...groups.flatMap(g => g.models.filter(m => m.available).map(m => m.id))], [groups]);

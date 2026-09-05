@@ -1,4 +1,3 @@
-// Run a command, capture combined output, assert a success token.
 import { spawnSync } from 'node:child_process';
 import { ROOT } from './_lib.mjs';
 

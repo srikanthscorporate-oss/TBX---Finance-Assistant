@@ -8,11 +8,7 @@ export async function getDataset(): Promise<DatasetInfo> {
   return r.json();
 }
 
-/**
- * Stream one question. Agent events arrive as they happen so the timeline
- * reflects real work rather than a canned animation; the final payload carries
- * the verified answer.
- */
+/** Stream one question; agent events fire as they arrive, the final payload is returned. */
 export async function streamChat(
   message: string,
   conversationId: string | null,
@@ -42,7 +38,6 @@ export async function streamChat(
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
-    // SSE frames are separated by a blank line.
     let idx: number;
     while ((idx = buffer.indexOf('\n\n')) !== -1) {
       const frame = buffer.slice(0, idx);

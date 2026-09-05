@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
-"""Generate a stand-in dataset shaped like the promised TBX starter data.
+"""Generate a stand-in dataset shaped like the TBX starter data into data/raw/.
 
-This exists so the pipeline can be built and evaluated before the real dataset
-lands. It is NOT training data and never ships to production: the loader reads
-whatever CSVs are in data/raw/, so swapping in the real files is a file copy.
-
-Deliberately includes the messy cases the assistant must handle correctly:
-  * two vendors sharing a first token ("Acme Technologies" / "Acme Logistics")
-    so vendor ambiguity -> CLARIFICATION_REQUIRED can be exercised
-  * a small number of unreconciled / disputed rows
-  * one genuine payout outlier for the anomaly-callout bonus
-  * no GST/tax column at all, so "how much GST did we pay?" must return
-    DATA_UNAVAILABLE rather than a guess
+Includes two vendors sharing a first token (Acme Technologies / Acme Logistics) for the
+clarification path, some unreconciled and disputed rows, one planted spend spike for the
+anomaly agent, and no GST/tax column so that question is data_unavailable.
 """
 from __future__ import annotations
 
@@ -31,7 +23,6 @@ CATEGORIES = [
 ]
 
 VENDORS = [
-    # (id, name, legal name, category, country)
     ("V1001", "Acme Technologies", "Acme Technologies Pvt Ltd", "Cloud Infrastructure", "IN"),
     ("V1002", "Acme Logistics", "Acme Logistics Pvt Ltd", "Logistics", "IN"),
     ("V1003", "Northwind Consulting", "Northwind Consulting LLP", "Professional Services", "IN"),
@@ -67,7 +58,6 @@ CATEGORY_ACCOUNT = {
     "Legal": "5090", "Recruitment": "5100",
 }
 
-# Rough monthly spend scale per vendor, so totals look plausible rather than uniform.
 VENDOR_SCALE = {
     "V1001": 1_800_000, "V1002": 420_000, "V1003": 950_000, "V1004": 700_000,
     "V1005": 1_100_000, "V1006": 380_000, "V1007": 260_000, "V1008": 340_000,
@@ -96,18 +86,16 @@ RECON_FIELDS = ["recon_id", "transaction_id", "status", "matched_at",
 
 
 def generate(outdir: Path, start: date, end: date, target_rows: int | None = None) -> dict[str, int]:
-    """Write the dataset, streaming rows to disk so 20M fits in constant memory.
+    """Write the dataset, streaming rows so 20M fits in constant memory.
 
-    `target_rows` scales transactions per vendor-month so the total lands near
-    the requested count, which is how the 20M-record test set is produced.
+    `target_rows` sets transactions per vendor-month with ceil, so a requested 20M produces
+    at least 20M rows. Acme Technologies (V1001) spikes in July 2026 for the anomaly agent.
     """
     rng = random.Random(SEED)
     outdir.mkdir(parents=True, exist_ok=True)
 
     months = list(month_iter(start, end))
     slots = len(months) * len(VENDORS)
-    # ceil, not round: a requested 20M must produce AT LEAST 20M so the
-    # scale claim is literally true, never 74 rows short of it.
     per_slot = max(1, math.ceil(target_rows / slots)) if target_rows else None
 
     txn_fh = (outdir / "transactions.csv").open("w", newline="")
@@ -124,10 +112,8 @@ def generate(outdir: Path, start: date, end: date, target_rows: int | None = Non
         for vid, vname, _legal, category, _country in VENDORS:
             scale = VENDOR_SCALE[vid]
             n_txn = per_slot if per_slot else rng.randint(6, 22)
-            # Seasonal wobble so month-over-month comparisons are meaningful.
             wobble = rng.uniform(0.75, 1.3)
 
-            # One deliberate anomaly: Acme Technologies spikes in July 2026.
             if vid == "V1001" and (year, month) == (2026, 7):
                 wobble = 4.2
                 n_txn += 6

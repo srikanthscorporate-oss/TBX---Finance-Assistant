@@ -1,4 +1,4 @@
-"""The model catalog, for the dropdown and for the model-choice note."""
+"""The model catalog, for the dropdown and the model-choice note."""
 from __future__ import annotations
 
 from typing import Any
@@ -12,6 +12,11 @@ router = APIRouter(prefix="/api/v1", tags=["models"])
 
 @router.get("/models")
 async def models() -> dict[str, Any]:
+    """Catalog for the dropdown.
+
+    `models` is what may be selected; over-ceiling and unlisted entries are
+    returned with their reason rather than hidden.
+    """
     primary = catalog.auto_primary()
     alternate = catalog.auto_alternate(primary)
     return {
@@ -23,11 +28,7 @@ async def models() -> dict[str, Any]:
                       "same model with feedback, then a different compliant model. "
                       "Never a larger one.",
         },
-        # Only what the dropdown may show. Everything else is in `excluded`
-        # (over the ceiling) or `unlisted` (paid, no key), never silently gone.
         "models": [m.to_public() for m in catalog.all_models() if m.listed],
-        # Every other free model the key can see, with its size, so the user
-        # sees the whole set and why a given one is not selectable.
         "over_ceiling": [m.to_public() for m in catalog.all_models()
                          if m.free and m.refused and m.provider == "openrouter"],
         "unlisted": [{"id": m.id, "label": m.label,

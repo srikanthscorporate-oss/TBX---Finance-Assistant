@@ -14,10 +14,10 @@ Scope: Take the verified grounding core to a running, deployable product - FastA
   EXPECT: GATE_G2_PASS
   EVIDENCE: automatic-evidence=v1; definition-sha256=30c5a0f32a07cde8df7ab0c22ea7ff7a089de716b49aa85db733e5a96d477e91; exit=0; EXPECT=matched; output-sha256=70c7ec1692b0fafa57fb104510975b8cc4643d97caa80cf8d50f0bcfa11157d7; output-bytes=382; shell=/bin/sh; cwd=/Users/shadow/Desktop/TBX hackathon/Financial Assistant; path=b9c24ccdd5b4/17 entries
 
-- [ ] G3: The four user-facing response states are reachable over HTTP (answer, clarification_required, data_unavailable, out_of_scope), and no non-answer state ever carries a figure or evidence. The ERROR path is covered in G10.
+- [x] G3: The four user-facing response states are reachable over HTTP (answer, clarification_required, data_unavailable, out_of_scope), and no non-answer state ever carries a figure or evidence. The ERROR path is covered in G10.
   CHECK: node scripts/verify/states.mjs
   EXPECT: GATE_G3_PASS
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=1fcac40c55ff00e3e3d43656d884fc0e58dc8e3ce0c1213e10bb4addca3709e8; exit=0; EXPECT=matched; output-sha256=30399e37cb4dc0266cc89c660d96f9936cd4e59e25a76640dba69782635cdc5b; output-bytes=424; shell=/bin/sh; cwd=/Users/shadow/Desktop/TBX hackathon/Financial Assistant; path=b9c24ccdd5b4/17 entries
 
 - [ ] G4: The SSE endpoint streams ordered agent events ending in run_completed.
   CHECK: node scripts/verify/sse.mjs

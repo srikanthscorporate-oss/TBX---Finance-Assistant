@@ -1,7 +1,4 @@
-"""SSE events streamed to the live agent timeline.
-
-These describe *auditable actions and their outputs* -- never model reasoning.
-"""
+"""SSE events for the live agent timeline: actions and outputs, not model reasoning."""
 from __future__ import annotations
 
 from datetime import datetime

@@ -14,7 +14,6 @@ if (v.state !== 'data_unavailable') fail('G20', `unknown vendor state=${v.state}
 if (!(v.clarification?.options?.length)) fail('G20', 'unknown vendor offered no vendor names');
 if (!v.clarification.options.some(o => o.label === 'Acme Technologies')) fail('G20', 'vendor suggestions lack a real vendor');
 
-// Picking a guided question must lead to a real, evidenced answer.
 const g = await post('/api/v1/chat', { message: opts[0].value, conversation_id: r.conversation_id });
 if (g.state !== 'answer' || !g.evidence) fail('G20', `guided question did not produce an answer (${g.state}: ${g.message || ''})`);
 pass('G20', `out_of_scope: "${r.message.slice(0, 60)}..."`, `${opts.length} guided questions offered`,
