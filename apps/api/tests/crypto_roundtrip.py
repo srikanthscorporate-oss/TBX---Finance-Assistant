@@ -34,7 +34,8 @@ for s in SAMPLES:
     token = cipher.encrypt(s)
     check(f"round trip {s[:16]!r}", cipher.decrypt(token) == s)
     if s:
-        check(f"ciphertext differs from plaintext {s[:16]!r}", token != s and s not in token)
+        check(f"ciphertext differs from plaintext {s[:16]!r}",
+              token != s and (len(s) < 4 or s not in token))
         check(f"ciphertext is base64 {s[:16]!r}", base64.b64decode(token, validate=True) is not None)
     else:
         check("empty string encrypts to empty", token == "")

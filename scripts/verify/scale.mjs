@@ -47,21 +47,22 @@ const maxDate = (await q(`SELECT max(txn_date) AS d FROM ${DB}.transaction`)).ro
 const [y, m] = maxDate.split('-').map(Number);
 const py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
 const mStart = `${py}-${String(pm).padStart(2, '0')}-01`;
-const mEnd = `${py}-${String(pm).padStart(2, '0')}-${new Date(py, pm, 0).getDate()}`;
+const mEndNext = `${y}-${String(m).padStart(2, '0')}-01`;
+const maxNext = new Date(Date.UTC(y, m - 1, Number(maxDate.slice(8, 10)) + 1)).toISOString().slice(0, 10);
 const qStart = `${y}-${String(Math.floor((m - 1) / 3) * 3 + 1).padStart(2, '0')}-01`;
 const hash = (await q(`SELECT utr_hash FROM ${DB}.transaction WHERE entity_id = {entity_id:String} AND utr_hash != '' LIMIT 1`, { entity_id: entity })).rows[0].utr_hash;
 
 const shapes = [
-  ['entity month debit sum', `SELECT sum(t.transaction_amount) AS value, count() AS record_count, uniqExact(t.transaction_type) AS type_variants FROM ${DB}.transaction AS t WHERE t.entity_id = {entity_id:String} AND t.txn_date >= {d_start:Date} AND t.txn_date <= {d_end:Date} AND t.transaction_type = {transaction_type:String}`,
-    { entity_id: entity, d_start: mStart, d_end: mEnd, transaction_type: 'debit' }],
+  ['entity month debit sum', `SELECT sum(t.transaction_amount) AS value, count() AS record_count, uniqExact(t.transaction_type) AS type_variants FROM ${DB}.transaction AS t WHERE t.entity_id = {entity_id:String} AND t.transaction_date >= toDateTime64({d_start:Date}, 6) AND t.transaction_date < toDateTime64({d_end_next:Date}, 6) AND t.transaction_type = {transaction_type:String}`,
+    { entity_id: entity, d_start: mStart, d_end_next: mEndNext, transaction_type: 'debit' }],
   ['entity counterparty count', `SELECT count() AS value, count() AS record_count, uniqExact(t.transaction_type) AS type_variants FROM ${DB}.transaction AS t WHERE t.entity_id = {entity_id:String} AND t.counterparty = {counterparty:String}`,
     { entity_id: entity, counterparty }],
   ['entity+account month trend', `SELECT toStartOfMonth(t.txn_date) AS month, sum(t.transaction_amount) AS value, count() AS record_count FROM ${DB}.transaction AS t WHERE t.entity_id = {entity_id:String} AND t.account_id = {account_id:String} AND t.transaction_type = {transaction_type:String} GROUP BY month ORDER BY month ASC LIMIT {row_limit:UInt32}`,
     { entity_id: entity, account_id: account, transaction_type: 'debit', row_limit: 100 }],
   ['utr_hash lookup', `SELECT t.transaction_id AS transaction_id, t.utr_enc AS utr_enc, count() OVER () AS total_matches FROM ${DB}.transaction AS t WHERE t.entity_id = {entity_id:String} AND t.utr_hash = {utr_hash:String} ORDER BY t.transaction_date DESC, t.transaction_id LIMIT {row_limit:UInt32}`,
     { entity_id: entity, utr_hash: hash, row_limit: 100 }],
-  ['largest 10 debits in a quarter', `SELECT t.transaction_id AS transaction_id, t.transaction_amount AS transaction_amount, count() OVER () AS total_matches FROM ${DB}.transaction AS t WHERE t.entity_id = {entity_id:String} AND t.txn_date >= {d_start:Date} AND t.txn_date <= {d_end:Date} AND t.transaction_type = {transaction_type:String} ORDER BY t.transaction_amount DESC, t.transaction_id LIMIT {row_limit:UInt32}`,
-    { entity_id: entity, d_start: qStart, d_end: maxDate, transaction_type: 'debit', row_limit: 10 }],
+  ['largest 10 debits in a quarter', `SELECT t.transaction_id AS transaction_id, t.transaction_amount AS transaction_amount, count() OVER () AS total_matches FROM ${DB}.transaction AS t WHERE t.entity_id = {entity_id:String} AND t.transaction_date >= toDateTime64({d_start:Date}, 6) AND t.transaction_date < toDateTime64({d_end_next:Date}, 6) AND t.transaction_type = {transaction_type:String} ORDER BY t.transaction_amount DESC, t.transaction_id LIMIT {row_limit:UInt32}`,
+    { entity_id: entity, d_start: qStart, d_end_next: maxNext, transaction_type: 'debit', row_limit: 10 }],
   ['full-table total', `SELECT sum(t.transaction_amount) AS value, count() AS record_count FROM ${DB}.transaction AS t WHERE 1`, {}],
   ['monthly trend, all entities', `SELECT toStartOfMonth(t.txn_date) AS month, sum(t.transaction_amount) AS value, count() AS record_count FROM ${DB}.transaction AS t WHERE 1 GROUP BY month ORDER BY month ASC LIMIT {row_limit:UInt32}`, { row_limit: 1000 }],
 ];
@@ -83,5 +84,5 @@ const liveAfter = Number((await q('SELECT count() AS n FROM tbx_finance.transact
 if (liveAfter !== liveBefore) fail('G14', `live dataset changed during the gate: ${liveBefore} -> ${liveAfter}`);
 
 pass('G14', `${count.toLocaleString()} rows loaded in ${rep.load_seconds}s across ${entities} entities, referential integrity clean, 0 duplicate ids, ${Number(enc.withUtr).toLocaleString()} UTRs encrypted with blind index`,
-     `busiest entity ${entity.slice(0, 8)}, period ${mStart}..${mEnd}`,
+     `busiest entity ${entity.slice(0, 8)}, period ${mStart}..${mEndNext}`,
      ...timings, `live tbx_finance.transaction unchanged (${liveBefore.toLocaleString()} rows)`);

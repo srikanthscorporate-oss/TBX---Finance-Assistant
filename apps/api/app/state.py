@@ -72,6 +72,21 @@ class AppState:
             if len(self.usage_log) > self.max_usage_log:
                 del self.usage_log[: len(self.usage_log) - self.max_usage_log]
 
+    def clear_history(self) -> dict[str, int]:
+        """Drop per-run accounting, judge verdicts and every conversation, in memory and in
+        Redis. Plan and answer caches and circuit breakers are kept: they are performance
+        state, not history."""
+        with self._lock:
+            runs = len(self.usage_log)
+            conversations = len(self.conversations)
+            self.usage_log.clear()
+            self.conversations.clear()
+        removed = 0
+        if self.cache:
+            removed += self.cache.delete_prefix("conv")
+            removed += self.cache.delete_prefix("judge")
+        return {"runs": runs, "conversations": conversations, "redis_keys": removed}
+
     @property
     def ready(self) -> bool:
         return self.ch is not None and self.ctx is not None

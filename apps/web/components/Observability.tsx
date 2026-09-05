@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowsClockwise, ChartBar, CheckCircle, ShieldCheck, Warning } from '@phosphor-icons/react';
-import { getEvaluations, getJudge, getUsage } from '@/lib/api';
+import { getEvaluations, getJudge, getUsage, HISTORY_CLEARED_EVENT } from '@/lib/api';
 import type { EvalReport, JudgeSummary, RecentRun, Usage } from '@/lib/types';
 import { compactNumber, ms, pct } from '@/lib/format';
 import { BarSeries, ChartFrame, CompositionBar, RadialGauge, RingChart, Sparkline, TimingBar } from './charts';
@@ -99,7 +99,12 @@ export default function Observability({ initialUsage, initialEvals, initialJudge
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { load(); const t = setInterval(load, 10_000); return () => clearInterval(t); }, [load]);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 10_000);
+    window.addEventListener(HISTORY_CLEARED_EVENT, load);
+    return () => { clearInterval(t); window.removeEventListener(HISTORY_CLEARED_EVENT, load); };
+  }, [load]);
 
   if (loading) return <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-24" />)}</div>;
   if (error) return <Panel><Empty icon={<Warning size={24} weight="fill" />} title="Cannot reach the metrics API" body={error} /></Panel>;

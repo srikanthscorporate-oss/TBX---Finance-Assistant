@@ -137,3 +137,9 @@ async def get_conversation(conversation_id: str) -> dict[str, Any]:
         if state.last_plan else None,
         "last_period": state.last_period_label,
     }
+
+
+@router.post("/history/clear")
+async def clear_history() -> dict[str, int]:
+    """Forget every conversation and reset the observability counters."""
+    return app_state.clear_history()

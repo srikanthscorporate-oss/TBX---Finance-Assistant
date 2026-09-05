@@ -8,6 +8,7 @@ as ciphertext and decrypted by the evidence builder; the key never enters SQL.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 from ..contracts.enums import GroupBy, Intent, Metric, ReferenceKind
@@ -129,7 +130,10 @@ def compile_plan(plan: FinanceQueryPlan, *, utr_hash: str | None = None) -> Comp
 def _build_where(plan: FinanceQueryPlan, params: dict[str, Any], *,
                  utr_hash: str | None) -> str:
     """Every value is a bound parameter. The counterparty must already be resolved to
-    an exact stored value; fuzzy matching lives in the resolver."""
+    an exact stored value; fuzzy matching lives in the resolver.
+
+    Dates filter the raw transaction_date as a half-open range rather than the
+    materialised txn_date, because only the raw column prunes monthly partitions."""
     clauses: list[str] = []
 
     if plan.entity_id:
@@ -141,9 +145,11 @@ def _build_where(plan: FinanceQueryPlan, params: dict[str, Any], *,
             raise CompilationError(
                 "date_range reached the compiler unresolved; call services.dates.resolve first"
             )
-        clauses.append("t.txn_date >= {d_start:Date} AND t.txn_date <= {d_end:Date}")
+        clauses.append("t.transaction_date >= toDateTime64({d_start:Date}, 6) "
+                       "AND t.transaction_date < toDateTime64({d_end_next:Date}, 6)")
+        assert plan.date_range.resolved_end is not None
         params["d_start"] = plan.date_range.resolved_start
-        params["d_end"] = plan.date_range.resolved_end
+        params["d_end_next"] = plan.date_range.resolved_end + timedelta(days=1)
 
     if plan.counterparty:
         clauses.append("t.counterparty = {counterparty:String}")

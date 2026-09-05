@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUp, CircleNotch, Sparkle } from '@phosphor-icons/react';
-import { getDataset, getEntities, streamChat } from '@/lib/api';
+import { getDataset, getEntities, streamChat, HISTORY_CLEARED_EVENT } from '@/lib/api';
 import type { AgentEvent, ClarificationOption, DatasetInfo, EntityInfo, Turn } from '@/lib/types';
 import { stageOf } from '@/lib/stages';
 import ModelPicker, { AUTO } from './ModelPicker';
@@ -54,6 +54,16 @@ export default function Workbench() {
       setEntities(list);
       setEntityId(prev => prev ?? (list.find(e => e.default) ?? list[0])?.entity_id ?? null);
     }).catch(() => setEntities([]));
+  }, []);
+
+  useEffect(() => {
+    const reset = () => {
+      conversationId.current = null;
+      setTurns([]);
+      setSelectedId(null);
+    };
+    window.addEventListener(HISTORY_CLEARED_EVENT, reset);
+    return () => window.removeEventListener(HISTORY_CLEARED_EVENT, reset);
   }, []);
 
   // Changing the entity starts a fresh conversation so no parked plan crosses scopes.

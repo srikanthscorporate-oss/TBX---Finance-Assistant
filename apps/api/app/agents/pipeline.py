@@ -466,10 +466,12 @@ class Pipeline:
                                                      hint=f"{c.txn_count:,} transactions")
                                  for c in near]),
                     capabilities=CAPABILITIES)
-            plan.counterparty = res.best.name
-            plan.counterparty_name = res.best.name
-            rc.emit(EventType.ENTITY_RESOLVED, f"Counterparty: {res.best.name}",
-                    query=res.query, counterparty=res.best.name,
+            best = res.best
+            assert best is not None
+            plan.counterparty = best.name
+            plan.counterparty_name = best.name
+            rc.emit(EventType.ENTITY_RESOLVED, f"Counterparty: {best.name}",
+                    query=res.query, counterparty=best.name,
                     match=res.kind.value, score=res.score)
             match, score = res.kind, res.score
 

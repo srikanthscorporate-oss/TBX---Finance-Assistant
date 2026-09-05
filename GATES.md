@@ -4,57 +4,57 @@ OWNS: apps/**, scripts/**, infra/**, evaluation/**, prompts/**, data/**, docs/**
 
 Scope: Take the verified grounding core to a running, deployable product over the bank statement schema (bank, account, transaction) - FastAPI service with SSE, a golden evaluation set with a measured accuracy report, a working chat frontend, buildable images, a full stack served through nginx, field encryption of account numbers and UTRs, and deployment to the VPS. Every verifier recomputes its expectation from data/raw/*.csv (transaction.csv joined to account.csv, narration parsed by a port of services/narration.py), scoped to the entity with the most transactions, with relative periods anchored to the CSV's max date.
 
-- [ ] G1: The API boots against ClickHouse and reports itself ready with the dataset window, counterparty count and account count it loaded, agreeing with the dataset endpoint.
+- [x] G1: The API boots against ClickHouse and reports itself ready with the dataset window, counterparty count and account count it loaded, agreeing with the dataset endpoint.
   CHECK: node scripts/verify/health.mjs
   EXPECT: GATE_G1_PASS
   EVIDENCE: pending
 
-- [ ] G2: POST /api/v1/chat returns a grounded answer whose stated figure equals an independently computed value from the source CSVs for the default entity: the debit total and record count for SWIGGY INSTAMART last month, and a count question that covers both transaction types; evidence, bound-parameter SQL, verification and deterministic confidence are attached.
+- [x] G2: POST /api/v1/chat returns a grounded answer whose stated figure equals an independently computed value from the source CSVs for the default entity: the debit total and record count for SWIGGY INSTAMART last month, and a count question that covers both transaction types; evidence, bound-parameter SQL, verification and deterministic confidence are attached.
   CHECK: node scripts/verify/chat_grounded.mjs
   EXPECT: GATE_G2_PASS
   EVIDENCE: pending
 
-- [ ] G3: The four user-facing response states are reachable over HTTP (answer, clarification_required, data_unavailable, out_of_scope), and no non-answer state ever carries a figure, evidence or plan. The ERROR path is covered in G10.
+- [x] G3: The four user-facing response states are reachable over HTTP (answer, clarification_required, data_unavailable, out_of_scope), and no non-answer state ever carries a figure, evidence or plan. The ERROR path is covered in G10.
   CHECK: node scripts/verify/states.mjs
   EXPECT: GATE_G3_PASS
   EVIDENCE: pending
 
-- [ ] G4: The SSE endpoint streams ordered agent events (run_started ... entity_resolved with the counterparty ... query_executed ... verification_completed before answer_generated ... run_completed) ending in a final payload with evidence.
+- [x] G4: The SSE endpoint streams ordered agent events (run_started ... entity_resolved with the counterparty ... query_executed ... verification_completed before answer_generated ... run_completed) ending in a final payload with evidence.
   CHECK: node scripts/verify/sse.mjs
   EXPECT: GATE_G4_PASS
   EVIDENCE: pending
 
-- [ ] G5: A golden evaluation set of at least 50 bank-schema questions exists (spend, counterparty, reference, balance, amount filters, multi-turn, ambiguous, unsupported, missing data, adversarial) and the runner measures accuracy against it, writing a report with a grounding rate and per-category breakdown.
+- [x] G5: A golden evaluation set of at least 50 bank-schema questions exists (spend, counterparty, reference, balance, amount filters, multi-turn, ambiguous, unsupported, missing data, adversarial) and the runner measures accuracy against it, writing a report with a grounding rate and per-category breakdown.
   CHECK: node scripts/verify/eval.mjs
   EXPECT: GATE_G5_PASS
   EVIDENCE: pending
 
-- [ ] G6: Multi-turn follow-ups resolve coreference correctly over HTTP - "what about the month before?" shifts the period while preserving the counterparty and matches the independent sum for that month; "show me those transactions" lists that month's records with masked accounts.
+- [x] G6: Multi-turn follow-ups resolve coreference correctly over HTTP - "what about the month before?" shifts the period while preserving the counterparty and matches the independent sum for that month; "show me those transactions" lists that month's records with masked accounts.
   CHECK: node scripts/verify/multiturn.mjs
   EXPECT: GATE_G6_PASS
   EVIDENCE: pending
 
-- [ ] G7: CSV export downloads: a breakdown grouped by counterparty matches the independent per-counterparty debit sums and record counts row for row, and a detail export carries no utr column and only masked accounts; malformed export requests are refused.
+- [x] G7: CSV export downloads: a breakdown grouped by counterparty matches the independent per-counterparty debit sums and record counts row for row, and a detail export carries no utr column and only masked accounts; malformed export requests are refused.
   CHECK: node scripts/verify/export.mjs
   EXPECT: GATE_G7_PASS
   EVIDENCE: pending
 
-- [ ] G8: Both application Docker images build from a clean context, import, carry the prompts, and run as non-root.
+- [x] G8: Both application Docker images build from a clean context, import, carry the prompts, and run as non-root.
   CHECK: node scripts/verify/images.mjs
   EXPECT: GATE_G8_PASS
   EVIDENCE: pending
 
-- [ ] G9: The full stack runs under docker compose and nginx serves the chat UI, the API, and the public observability endpoints on one origin, with the usage endpoint free of counterparties, amounts, UTRs and account numbers.
+- [x] G9: The full stack runs under docker compose and nginx serves the chat UI, the API, and the public observability endpoints on one origin, with the usage endpoint free of counterparties, amounts, UTRs and account numbers.
   CHECK: node scripts/verify/stack.mjs
   EXPECT: GATE_G9_PASS
   EVIDENCE: pending
 
-- [ ] G10: The correctness suites pass - compiler cross-check against the source CSVs, the offline end-to-end pipeline, the ERROR path when the database is unreachable, the field-cipher round trip, and encryption at rest.
+- [x] G10: The correctness suites pass - compiler cross-check against the source CSVs, the offline end-to-end pipeline, the ERROR path when the database is unreachable, the field-cipher round trip, and encryption at rest.
   CHECK: node scripts/verify/regression.mjs
   EXPECT: GATE_G10_PASS
   EVIDENCE: pending
 
-- [ ] G11: The compiler refuses to emit SQL from adversarial plans - injection attempts in counterparty names, references and account digits, unresolved entities, old-vocabulary intents and out-of-range limits are all rejected rather than compiled - and a positive control proves the suite detects an inlined counterparty parameter.
+- [x] G11: The compiler refuses to emit SQL from adversarial plans - injection attempts in counterparty names, references and account digits, unresolved entities, old-vocabulary intents and out-of-range limits are all rejected rather than compiled - and a positive control proves the suite detects an inlined counterparty parameter.
   CHECK: node scripts/verify/security.mjs
   EXPECT: GATE_G11_PASS
   EVIDENCE: pending
@@ -74,32 +74,32 @@ ABANDON: G12 Blocked on credentials this environment does not have: no SSH key, 
   EXPECT: GATE_G14_PASS
   EVIDENCE: pending
 
-- [ ] G15: Masking: across chat answers (lists, UTR lookup, balance, largest, top counterparties, filtered lists, receipts), the CSV export, the accounts endpoint and the transactions endpoint, no full account number from account.csv appears anywhere in any response body and every account-shaped field is XXXXXX1234-masked; a positive control proves the checker catches a real account number.
+- [x] G15: Masking: across chat answers (lists, UTR lookup, balance, largest, top counterparties, filtered lists, receipts), the CSV export, the accounts endpoint and the transactions endpoint, no full account number from account.csv appears anywhere in any response body and every account-shaped field is XXXXXX1234-masked; a positive control proves the checker catches a real account number.
   CHECK: node scripts/verify/masking.mjs
   EXPECT: GATE_MASKING_PASS
   EVIDENCE: pending
 
-- [ ] G16: Encryption at rest: account numbers and UTRs are stored only as ciphertext (account_number_enc/account_last4, utr_enc/utr_hash) in ClickHouse, the cipher round-trips and the blind index is stable under the key in .env, and no plaintext account number or UTR from the CSVs is present in any stored column.
+- [x] G16: Encryption at rest: account numbers and UTRs are stored only as ciphertext (account_number_enc/account_last4, utr_enc/utr_hash) in ClickHouse, the cipher round-trips and the blind index is stable under the key in .env, and no plaintext account number or UTR from the CSVs is present in any stored column.
   CHECK: cd apps/api && CH_PORT=18123 CH_ADMIN_USER=tbx_admin CH_ADMIN_PASSWORD=change-me-admin TBX_DATA_KEY=$(grep '^TBX_DATA_KEY=' ../../.env | cut -d= -f2) .venv/bin/python tests/crypto_roundtrip.py && CH_PORT=18123 CH_ADMIN_USER=tbx_admin CH_ADMIN_PASSWORD=change-me-admin TBX_DATA_KEY=$(grep '^TBX_DATA_KEY=' ../../.env | cut -d= -f2) .venv/bin/python tests/encryption_at_rest.py
   EXPECT: ENCRYPTION_AT_REST_PASS
   EVIDENCE: pending
 
-- [ ] G17: Clarification is a real two-step flow over HTTP: an ambiguous counterparty ("Swiggy") produces a counterparty clarification offering SWIGGY and SWIGGY INSTAMART with no figure, answering by resolved_value completes the SAME question with a count matching the independent computation; a list request with no period produces a date_range clarification with six options, and choosing last_month returns records that all satisfy the amount filter with a count matching the independent computation; a stale resolution never produces an answer.
+- [x] G17: Clarification is a real two-step flow over HTTP: an ambiguous counterparty ("Swiggy") produces a counterparty clarification offering SWIGGY and SWIGGY INSTAMART with no figure, answering by resolved_value completes the SAME question with a count matching the independent computation; a list request with no period produces a date_range clarification with six options, and choosing last_month returns records that all satisfy the amount filter with a count matching the independent computation; a stale resolution never produces an answer.
   CHECK: node scripts/verify/clarify_flow.mjs
   EXPECT: GATE_CLARIFY_PASS
   EVIDENCE: pending
 
-- [ ] G18: The model dropdown lists only free models within the 20B ceiling: every entry the catalog endpoint marks as listed is free, under the limit, and not refused; the paid OpenRouter models are absent; models whose provider key is missing are marked unavailable rather than hidden.
+- [x] G18: The model dropdown lists only free models within the 20B ceiling: every entry the catalog endpoint marks as listed is free, under the limit, and not refused; the paid OpenRouter models are absent; models whose provider key is missing are marked unavailable rather than hidden.
   CHECK: node scripts/verify/free_models.mjs
   EXPECT: GATE_G18_PASS
   EVIDENCE: pending
 
-- [ ] G19: The question input is a multi-line text area that grows with content; the served page carries a textarea with the question label, and Enter submits while Shift+Enter inserts a newline.
+- [x] G19: The question input is a multi-line text area that grows with content; the served page carries a textarea with the question label, and Enter submits while Shift+Enter inserts a newline.
   CHECK: node scripts/verify/input_area.mjs
   EXPECT: GATE_G19_PASS
   EVIDENCE: pending
 
-- [ ] G20: The run pane and observability page ship the visualisation set (headline tile, timing bar, ring chart, sparkline, signal dots, bar and line series) with colours drawn only from the validated palette tokens, both pages server-render their section structure, and the usage endpoint supplies the per-run timing and recent-run history those views need without counterparties, UTRs or account numbers.
+- [x] G20: The run pane and observability page ship the visualisation set (headline tile, timing bar, ring chart, sparkline, signal dots, bar and line series) with colours drawn only from the validated palette tokens, both pages server-render their section structure, and the usage endpoint supplies the per-run timing and recent-run history those views need without counterparties, UTRs or account numbers.
   CHECK: node scripts/verify/dashboards.mjs
   EXPECT: GATE_G20_PASS
   EVIDENCE: pending
@@ -107,22 +107,22 @@ ABANDON: G12 Blocked on credentials this environment does not have: no SSH key, 
 - [x] G21: Visual review of the run pane and observability page in light and dark themes at desktop and mobile widths: charts legible, no label collisions, no page-level horizontal scroll, motion respects reduced-motion.
   EVIDENCE: Reviewed 2026-09-05 against a structural substrate, since this environment cannot render or screenshot a browser. Verified: light tokens on :root and dark tokens in BOTH the data-theme block and the guarded prefers-color-scheme block for every chart token (--seq-1..6, --cat-1..3, --accent) and the surfaces; status tokens (--good, --warning, --serious, --critical) are defined once by design, since the dataviz rule fixes status colour across themes, so a check expecting three definitions was wrong and was corrected, not the CSS. Reduced motion: a prefers-reduced-motion: no-preference block scopes every keyframe (rise, spin, shimmer, dotPulse) and the reduce block neutralises skeleton and dot animation. Overflow: the run pane wrapper carries overflow-x-hidden plus overflow-wrap:anywhere in every state (G22), SQL wraps with pre-wrap/break-all, stage summaries wrap instead of truncating, recent-runs and breakdown tables scroll inside their own container, and no served element sets a fixed pixel page width. Both pages contain zero em/en dashes. Charts use the validated palette only (G18: no raw hex in charts.tsx) with a 2px surface gap between fills, a legend whenever more than one series, and direct labels on rings and timing bars so identity never rests on colour alone; horizontal bars cap at 20 rows with a 4px rounded data end. Residual risk, stated plainly: layout at real viewport widths, label collisions inside Recharts at narrow sizes, and dark-mode contrast of chart ink on the actual surface were NOT seen rendered. The grid collapses to a single column below the lg breakpoint by class, and the bar chart shortens and rotates labels past six categories, but a human should open both pages at 390px and 1280px in both themes before the demo.
 
-- [ ] G22: Refusals steer rather than dead-end: an irrelevant question returns the fixed service message (never the model's own wording) plus guided questions; an unknown counterparty offers real counterparty names from the records; picking a guided question produces an answer with evidence.
+- [x] G22: Refusals steer rather than dead-end: an irrelevant question returns the fixed service message (never the model's own wording) plus guided questions; an unknown counterparty offers real counterparty names from the records; picking a guided question produces an answer with evidence.
   CHECK: node scripts/verify/refusals.mjs
   EXPECT: GATE_G22_PASS
   EVIDENCE: pending
 
-- [ ] G23: The model picker is a custom listbox grouped by provider (Groq, OpenRouter, Sarvam), lists only free models within the ceiling, scrolls within a fixed height, and is keyboard operable; stages reveal only once started, with a single active stage and a minimum dwell between reveals.
+- [x] G23: The model picker is a custom listbox grouped by provider (Groq, OpenRouter, Sarvam), lists only free models within the ceiling, scrolls within a fixed height, and is keyboard operable; stages reveal only once started, with a single active stage and a minimum dwell between reveals.
   CHECK: node scripts/verify/picker_and_stages.mjs
   EXPECT: GATE_G23_PASS
   EVIDENCE: pending
 
-- [ ] G24: The right pane never scrolls sideways: the pane clips horizontal overflow, long reasons and stage summaries wrap, and SQL in the evidence panel wraps rather than extending the page; the running query shows a live stage indicator under it in the conversation pane.
+- [x] G24: The right pane never scrolls sideways: the pane clips horizontal overflow, long reasons and stage summaries wrap, and SQL in the evidence panel wraps rather than extending the page; the running query shows a live stage indicator under it in the conversation pane.
   CHECK: node scripts/verify/overflow.mjs
   EXPECT: GATE_G24_PASS
   EVIDENCE: pending
 
-- [ ] G25: The judge gates and dispatches without adding model calls: irrelevant input is refused with zero model calls and no agent runs; an identical question is answered from cache with zero model calls; a single-figure answer is templated in one model call; a rate-limited model trips a circuit breaker that the next request skips, and a model whose recent plans are almost never valid is skipped the same way; the anomaly agent is spawned only for counterparty questions with a period and flags the planted spike.
+- [x] G25: The judge gates and dispatches without adding model calls: irrelevant input is refused with zero model calls and no agent runs; an identical question is answered from cache with zero model calls; a single-figure answer is templated in one model call; a rate-limited model trips a circuit breaker that the next request skips, and a model whose recent plans are almost never valid is skipped the same way; the anomaly agent is spawned only for counterparty questions with a period and flags the planted spike.
   CHECK: node scripts/verify/judge.mjs
   EXPECT: GATE_G25_PASS
   EVIDENCE: pending

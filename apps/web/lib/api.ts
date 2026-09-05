@@ -144,3 +144,14 @@ export async function getSourceStatus(): Promise<SourceStatus> {
   if (!r.ok) throw new Error(`source status unavailable (${r.status})`);
   return r.json();
 }
+
+export const HISTORY_CLEARED_EVENT = 'tbx:history-cleared';
+
+/** Forget every conversation and reset the observability counters, server-side and in every open pane. */
+export async function clearHistory(): Promise<{ runs: number; conversations: number; redis_keys: number }> {
+  const res = await fetch(`${BASE}/api/v1/history/clear`, { method: 'POST' });
+  if (!res.ok) throw new Error(`clear history failed: ${res.status}`);
+  const out = await res.json();
+  window.dispatchEvent(new Event(HISTORY_CLEARED_EVENT));
+  return out;
+}

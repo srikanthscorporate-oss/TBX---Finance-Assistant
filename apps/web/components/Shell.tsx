@@ -2,8 +2,10 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { ChartLineUp, ChatCircleDots, Plugs } from '@phosphor-icons/react';
+import { useState } from 'react';
+import { ChartLineUp, ChatCircleDots, Plugs, Trash } from '@phosphor-icons/react';
 import ThemeToggle from './ThemeToggle';
+import { clearHistory } from '@/lib/api';
 
 const NAV = [
   { href: '/', label: 'Ask', Icon: ChatCircleDots },
@@ -41,11 +43,38 @@ export default function Shell({ children, meta }: {
 
           <div className="ml-auto flex shrink-0 items-center gap-3">
             {meta}
+            <ClearHistoryButton />
             <ThemeToggle />
           </div>
         </div>
       </header>
       {children}
     </div>
+  );
+}
+
+function ClearHistoryButton() {
+  const [state, setState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle');
+  const run = async () => {
+    if (state === 'busy') return;
+    if (!window.confirm('Clear all chat history and observability metrics?')) return;
+    setState('busy');
+    try {
+      await clearHistory();
+      setState('done');
+    } catch {
+      setState('error');
+    }
+    setTimeout(() => setState('idle'), 2000);
+  };
+  const label = state === 'busy' ? 'Clearing…' : state === 'done' ? 'Cleared' : state === 'error' ? 'Failed' : 'Clear History';
+  return (
+    <button type="button" onClick={run} disabled={state === 'busy'}
+      title="Forget every conversation and reset the observability counters"
+      className={`flex items-center gap-1.5 rounded-sm border border-line px-2.5 py-1.5 text-[13px] transition-colors
+        ${state === 'error' ? 'text-warning' : 'text-muted hover:text-ink'} disabled:opacity-60`}>
+      <Trash size={15} aria-hidden />
+      {label}
+    </button>
   );
 }

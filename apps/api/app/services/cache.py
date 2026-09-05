@@ -65,6 +65,18 @@ class Cache:
             except Exception:  # noqa: BLE001
                 pass
 
+    def delete_prefix(self, *parts: str) -> int:
+        """Delete every key under a prefix with SCAN, so a large history never blocks Redis."""
+        if not self._r:
+            return 0
+        removed = 0
+        try:
+            for key in self._r.scan_iter(match=self._k(*parts) + ":*", count=500):
+                removed += int(self._r.delete(key))
+        except Exception as e:  # noqa: BLE001
+            log.debug("cache delete_prefix failed: %s", e)
+        return removed
+
     def incr(self, *parts: str, ttl: int | None = None) -> int:
         if not self._r:
             return 0

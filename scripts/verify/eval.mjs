@@ -8,7 +8,8 @@ const goldenPath = path.join(ROOT, 'evaluation/golden/questions.json');
 if (!fs.existsSync(goldenPath)) fail('G5', 'golden set missing');
 const golden = JSON.parse(fs.readFileSync(goldenPath, 'utf8'));
 
-const turns = golden.length + golden.reduce((a, q) => a + (q.follow_ups?.length || 0), 0);
+// One turn per question, plus the auto-answered clarification and the follow-up where declared.
+const turns = golden.reduce((a, q) => a + 1 + (q.clarify_with ? 1 : 0) + (q.follow_up ? 1 : 0), 0);
 if (golden.length < 50) fail('G5', `only ${golden.length} golden questions (need >=50)`);
 
 const cats = new Set(golden.map(q => q.category));
@@ -23,6 +24,8 @@ for (const q of golden) {
   if (q.expected_state === 'any' && !q.acceptable_states &&
       !q.must_not_contain && !q.must_not_hedge)
     fail('G5', `${q.id} has expected_state "any" with no other assertion`);
+  if (q.expected_state === 'answer' && !q.expected_facts && !q.expected_records && !q.expected_intent)
+    fail('G5', `${q.id} expects an answer but asserts nothing about it`);
 }
 
 const r = run('python3', ['scripts/run_evaluation.py']);
@@ -46,11 +49,12 @@ if (!rep.efficiency || typeof rep.efficiency.avg_tokens_per_turn !== 'number')
 if (!rep.planner) fail('G5', 'report does not record which planner produced it');
 
 if (rep.grounding_rate < 1) fail('G5', `grounding rate ${rep.grounding_rate} < 1.0`);
+if (typeof rep.masking_rate === 'number' && rep.masking_rate < 1) fail('G5', `masking rate ${rep.masking_rate} < 1.0`);
 if (rep.hallucination_free_rate < 1)
   fail('G5', `hallucination-free rate ${rep.hallucination_free_rate} < 1.0`);
 
 pass('G5', `${golden.length} questions / ${turns} turns across ${cats.size} categories`,
      `planner=${rep.planner} -- ${rep.caveat}`,
      `overall ${(rep.overall_accuracy * 100).toFixed(1)}%, numeric ${(rep.numeric_accuracy * 100).toFixed(1)}%`,
-     `grounding ${(rep.grounding_rate * 100).toFixed(0)}%, hallucination-free ${(rep.hallucination_free_rate * 100).toFixed(0)}%`,
+     `grounding ${(rep.grounding_rate * 100).toFixed(0)}%, hallucination-free ${(rep.hallucination_free_rate * 100).toFixed(0)}%, masking ${((rep.masking_rate ?? 1) * 100).toFixed(0)}%`,
      `${rep.efficiency.avg_tokens_per_turn} tokens/turn, escalation ${(rep.efficiency.escalation_rate * 100).toFixed(1)}%`);
