@@ -86,6 +86,8 @@ def py_filter(rows: list[Txn], *, dr: DateRange | None = None, counterparty: str
 
 def run(ch, plan: FinanceQueryPlan, **kw):
     cq = compile_plan(plan, **kw)
+    check(f"{plan.intent.value}: entity_id is bound, never inlined",
+          cq.params.get("entity_id") == plan.entity_id and plan.entity_id not in cq.sql)
     return cq, ch.query(cq.sql, cq.params)
 
 
@@ -106,10 +108,25 @@ def main() -> int:
           f"{len(MINE):,} for entity {ENTITY[:8]}…)\n")
 
     dr = period("last_month")
-    plan = FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, entity_id=ENTITY, date_range=dr)
+    plan = FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, entity_id=ENTITY, date_range=dr,
+                            transaction_type=TransactionType.DEBIT)
+    check("a sum plan carries no implicit side until one is stated",
+          FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, entity_id=ENTITY,
+                           date_range=dr).transaction_type is None)
     rows = py_filter(MINE, dr=dr, txn_type="debit")
-    aggregate_case(ch, "spend_summary sum, last month (debits)", plan, rows,
-                   sum(t.amount for t in rows))
+    debit_last_month = sum(t.amount for t in rows)
+    aggregate_case(ch, "spend_summary sum, last month (debits)", plan, rows, debit_last_month)
+
+    # Both sides: no transaction_type, include_both_types set by the "both" clarification.
+    plan = FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, entity_id=ENTITY, date_range=dr,
+                            include_both_types=True)
+    both_rows = py_filter(MINE, dr=dr)
+    both_last_month = sum(t.amount for t in both_rows)
+    aggregate_case(ch, "spend_summary sum, last month (both types)", plan, both_rows,
+                   both_last_month)
+    check("both-types total differs from the debit-only total",
+          not approx(both_last_month, debit_last_month),
+          f"both {both_last_month} vs debits {debit_last_month}")
 
     plan = FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, entity_id=ENTITY, date_range=dr,
                             metric=Metric.COUNT)
@@ -118,15 +135,28 @@ def main() -> int:
     aggregate_case(ch, "spend_summary count, last month (both types)", plan, rows, len(rows))
 
     dr = period("this_year")
-    plan = FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, entity_id=ENTITY, date_range=dr)
+    plan = FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, entity_id=ENTITY, date_range=dr,
+                            transaction_type=TransactionType.DEBIT)
     rows = py_filter(MINE, dr=dr, txn_type="debit")
     aggregate_case(ch, "spend_summary sum, this year", plan, rows, sum(t.amount for t in rows))
 
     plan = FinanceQueryPlan(intent=Intent.COUNTERPARTY_SPEND, entity_id=ENTITY,
-                            counterparty_name="Swiggy", counterparty="SWIGGY")
+                            counterparty_name="Swiggy", counterparty="SWIGGY",
+                            transaction_type=TransactionType.DEBIT)
     rows = py_filter(MINE, counterparty="SWIGGY", txn_type="debit")
-    aggregate_case(ch, "counterparty_spend SWIGGY sum, all time", plan, rows,
-                   sum(t.amount for t in rows))
+    swiggy_debits = sum(t.amount for t in rows)
+    aggregate_case(ch, "counterparty_spend SWIGGY sum, all time", plan, rows, swiggy_debits)
+
+    plan = FinanceQueryPlan(intent=Intent.COUNTERPARTY_SPEND, entity_id=ENTITY,
+                            counterparty_name="Swiggy", counterparty="SWIGGY",
+                            include_both_types=True)
+    rows = py_filter(MINE, counterparty="SWIGGY")
+    swiggy_both = sum(t.amount for t in rows)
+    aggregate_case(ch, "counterparty_spend SWIGGY sum, all time (both types)", plan, rows,
+                   swiggy_both)
+    check("SWIGGY both-types total differs from the debit-only total",
+          not approx(swiggy_both, swiggy_debits),
+          f"both {swiggy_both} vs debits {swiggy_debits}")
 
     plan = FinanceQueryPlan(intent=Intent.COUNTERPARTY_SPEND, entity_id=ENTITY,
                             counterparty_name="Swiggy", counterparty="SWIGGY", metric=Metric.COUNT)
@@ -163,14 +193,22 @@ def main() -> int:
 
     dr = period("this_year")
     plan = FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, entity_id=ENTITY, date_range=dr,
-                            channel=Channel.UPI)
+                            channel=Channel.UPI, transaction_type=TransactionType.DEBIT)
     rows = py_filter(MINE, dr=dr, channel="UPI", txn_type="debit")
-    aggregate_case(ch, "spend_summary UPI debits, this year", plan, rows,
-                   sum(t.amount for t in rows))
+    upi_debits = sum(t.amount for t in rows)
+    aggregate_case(ch, "spend_summary UPI debits, this year", plan, rows, upi_debits)
+
+    plan = FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, entity_id=ENTITY, date_range=dr,
+                            channel=Channel.UPI, include_both_types=True)
+    rows = py_filter(MINE, dr=dr, channel="UPI")
+    upi_both = sum(t.amount for t in rows)
+    aggregate_case(ch, "spend_summary UPI both types, this year", plan, rows, upi_both)
+    check("UPI both-types total differs from the debit-only total",
+          not approx(upi_both, upi_debits), f"both {upi_both} vs debits {upi_debits}")
 
     dr = period("last_quarter")
     plan = FinanceQueryPlan(intent=Intent.LARGEST_TRANSACTIONS, entity_id=ENTITY, date_range=dr,
-                            limit=10)
+                            transaction_type=TransactionType.DEBIT, limit=10)
     rows = sorted(py_filter(MINE, dr=dr, txn_type="debit"),
                   key=lambda t: (-t.amount, t.transaction_id))[:10]
     cq, res = run(ch, plan)
@@ -181,7 +219,7 @@ def main() -> int:
           f"{[r['transaction_amount'] for r in res.rows]}")
 
     plan = FinanceQueryPlan(intent=Intent.TOP_COUNTERPARTIES, entity_id=ENTITY, date_range=dr,
-                            limit=10)
+                            transaction_type=TransactionType.DEBIT, limit=10)
     sums: dict[str, float] = defaultdict(float)
     counts: dict[str, int] = defaultdict(int)
     for t in py_filter(MINE, dr=dr, txn_type="debit"):

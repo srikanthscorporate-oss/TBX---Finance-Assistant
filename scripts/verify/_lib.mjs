@@ -15,13 +15,47 @@ export async function fetchRetry(url, init) {
 }
 
 export async function post(pathname, body) {
+  const payload = pathname.startsWith('/api/v1/chat') ? await withEntity(body) : body;
   const res = await fetchRetry(`${API}${pathname}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`POST ${pathname} -> ${res.status} ${await res.text()}`);
   return res.json();
+}
+
+let entityToken = null;
+let entityLabel = null;
+/** The API refuses to answer before an entity is chosen, so every chat call carries the
+ *  default entity's token, exactly as the UI does after the user picks one.
+ *
+ *  Tokens are nonced -- encrypting the same entity twice gives two different strings -- so
+ *  "other" is selected by the masked LABEL, which is stable, never by comparing tokens. */
+export async function entityTokenFor(which = 'default') {
+  if (entityToken === null) {
+    const list = await get(await dataPath('entities'));
+    const chosen = list.find(e => e.default) ?? list[0];
+    entityToken = chosen?.entity_id ?? '';
+    entityLabel = chosen?.label ?? '';
+  }
+  if (which === 'other') {
+    const list = await get(await dataPath('entities'));
+    const other = list.find(e => e.label !== entityLabel);
+    return other ? other.entity_id : '';
+  }
+  return entityToken;
+}
+
+/** The masked label of the default entity, as the API renders it. */
+export async function entityLabelFor() {
+  if (entityToken === null) await entityTokenFor();
+  return entityLabel;
+}
+
+async function withEntity(body) {
+  if (!body || typeof body !== 'object' || 'entity_id' in body) return body;
+  return { ...body, entity_id: await entityTokenFor() };
 }
 
 export async function get(pathname) {

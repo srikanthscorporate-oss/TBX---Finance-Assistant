@@ -60,9 +60,13 @@ class Dispatch:
 
 
 TEMPLATE_INTENTS = {"spend_summary", "counterparty_spend", "account_summary",
-                    "transaction_lookup", "reference_lookup", "balance",
+                    "transaction_lookup", "reference_lookup", "balance", "account_list",
+                    "top_counterparties",
                     "largest_transactions"}
 """Intents whose single-figure answers are rendered by a template instead of a model."""
+GROUPED_TEMPLATE_INTENTS = {"top_counterparties"}
+"""Grouped answers a template renders better than a model, because it names the leader."""
+
 ANOMALY_INTENTS = {"counterparty_spend"}
 
 
@@ -168,9 +172,10 @@ class Judge:
         reasons = list(d.reasons)
         grouped = bool(evidence.breakdown)
         intent = plan.intent.value
-        if not grouped and intent in TEMPLATE_INTENTS and plan.compare_to is None:
+        if (intent in TEMPLATE_INTENTS and plan.compare_to is None
+                and (not grouped or intent in GROUPED_TEMPLATE_INTENTS)):
             composer = "template"
-            reasons.append("single verified figure; templated sentence, no model call")
+            reasons.append("verified figure; templated sentence, no model call")
         else:
             composer = "llm"
         anomaly = intent in ANOMALY_INTENTS and plan.counterparty is not None and plan.date_range is not None

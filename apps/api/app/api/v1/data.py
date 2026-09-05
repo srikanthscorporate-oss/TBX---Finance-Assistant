@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from ...contracts.enums import GroupBy, Intent, Metric
 from ...contracts.plan import DateRange, FinanceQueryPlan
 from ...services.compiler import compile_plan
+from ...services import entity_token
 from ...services.dates import resolve
 from ...agents.context import DatasetContext
 from ...db.clickhouse import ClickHouseClient
@@ -23,6 +24,16 @@ def _require_ready() -> DatasetContext:
     if not app_state.ready or app_state.ctx is None:
         raise HTTPException(503, "dataset not loaded")
     return app_state.ctx
+
+
+def _entity(token: str | None, ctx: DatasetContext) -> str | None:
+    """Browse endpoints take the same encrypted entity token the chat does."""
+    if not token:
+        return ctx.default_entity
+    try:
+        return entity_token.decode(token)
+    except entity_token.BadEntityToken:
+        raise HTTPException(400, "unrecognised entity token") from None
 
 
 def _ch() -> ClickHouseClient:
@@ -38,8 +49,9 @@ async def entities() -> list[dict[str, Any]]:
     per_entity: dict[str, int] = {}
     for a in ctx.accounts:
         per_entity[a.entity_id] = per_entity.get(a.entity_id, 0) + 1
-    return [{"entity_id": e, "accounts": per_entity.get(e, 0),
-             "default": e == ctx.default_entity} for e in ctx.entities]
+    return [{"entity_id": entity_token.encode(e), "label": entity_token.mask(e),
+             "accounts": per_entity.get(e, 0), "default": e == ctx.default_entity}
+            for e in ctx.entities]
 
 
 @router.get("/accounts")
@@ -47,10 +59,11 @@ async def accounts(entity_id: str | None = None) -> list[dict[str, Any]]:
     """Accounts with masked numbers only; the encrypted number never leaves the database."""
     ctx = _require_ready()
     return [
-        {"account_id": a.account_id, "entity_id": a.entity_id, "account": a.masked,
+        {"account_id": a.account_id, "entity_id": entity_token.mask(a.entity_id),
+         "account": a.masked,
          "bank_code": a.bank_code, "bank_name": a.bank_name, "program_id": a.program_id,
          "available_balance": a.available_balance}
-        for a in ctx.accounts_for(entity_id)
+        for a in ctx.accounts_for(_entity(entity_id, ctx))
     ]
 
 
@@ -60,7 +73,7 @@ async def counterparties(entity_id: str | None = None,
     ctx = _require_ready()
     return [
         {"name": c.name, "transactions": c.txn_count, "channel": c.channel}
-        for c in ctx.counterparties_for(entity_id)[:limit]
+        for c in ctx.counterparties_for(_entity(entity_id, ctx))[:limit]
     ]
 
 
@@ -93,7 +106,7 @@ async def transactions(
     ctx = _require_ready()
     try:
         plan = FinanceQueryPlan(
-            intent=Intent.TRANSACTION_LOOKUP, entity_id=entity_id or ctx.default_entity,
+            intent=Intent.TRANSACTION_LOOKUP, entity_id=_entity(entity_id, ctx),
             counterparty=counterparty, channel=channel, transaction_type=transaction_type,  # type: ignore[arg-type]
             date_range=resolve(DateRange(relative=relative), ctx.calendar) if relative else None,  # type: ignore[arg-type]
             limit=limit)
@@ -129,7 +142,7 @@ async def export_csv(
     try:
         plan = FinanceQueryPlan(
             intent=intent, group_by=group_by, metric=metric, date_range=date_range,
-            entity_id=entity_id or ctx.default_entity, counterparty=counterparty,
+            entity_id=_entity(entity_id, ctx), counterparty=counterparty,
             channel=channel, transaction_type=transaction_type, limit=limit)  # type: ignore[arg-type]
         cq = compile_plan(plan)
     except Exception as e:  # noqa: BLE001

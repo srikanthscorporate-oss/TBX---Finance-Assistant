@@ -13,8 +13,9 @@ from typing import Any
 
 from ..contracts.enums import GroupBy, Intent, Metric, ReferenceKind
 from ..contracts.plan import FinanceQueryPlan
+from . import entity_token
+from .active_db import active_db
 
-DB = "tbx_finance"
 MAX_LIMIT = 1000
 
 _GROUP_BY_SQL: dict[GroupBy, tuple[str, str]] = {
@@ -55,6 +56,7 @@ _INTENT_TABLE: dict[Intent, str] = {
     Intent.TREND: "transaction",
     Intent.ANOMALY_SCAN: "transaction",
     Intent.BALANCE: "account",
+    Intent.ACCOUNT_LIST: "account",
 }
 """Base table per intent; exhaustive over the closed enum (asserted in tests)."""
 
@@ -87,11 +89,19 @@ class CompiledQuery:
     columns: list[str] = field(default_factory=list)
 
     def display(self) -> dict[str, Any]:
-        """The parameterized SQL and bound parameters for the evidence panel. Blind-index
-        parameters are shown truncated so the panel never carries a searchable hash."""
+        """The parameterized SQL and bound parameters for the evidence panel.
+
+        The blind index is truncated so the panel never carries a searchable hash, and the
+        entity id is masked so the raw id never reaches the browser.
+        """
         shown = {}
         for k, v in self.params.items():
-            shown[k] = f"{str(v)[:8]}…" if k == "utr_hash" else str(v)
+            if k == "utr_hash":
+                shown[k] = f"{str(v)[:8]}…"
+            elif k == "entity_id":
+                shown[k] = entity_token.mask(str(v)) or ""
+            else:
+                shown[k] = str(v)
         return {"sql": self.sql, "params": shown}
 
 
@@ -205,7 +215,7 @@ def _compile_aggregate(plan, where, params) -> CompiledQuery:
     sql = (
         f"SELECT {_metric_expr(plan)} AS value, count() AS record_count, "
         "uniqExact(t.transaction_type) AS type_variants "
-        f"FROM {DB}.transaction AS t WHERE {where}"
+        f"FROM {active_db()}.transaction AS t WHERE {where}"
     )
     return CompiledQuery(sql=sql, params=params, kind="aggregate")
 
@@ -221,7 +231,7 @@ def _compile_grouped(plan, where, params, force_group: GroupBy | None = None) ->
     params["row_limit"] = min(plan.limit, MAX_LIMIT)
     sql = (
         f"SELECT {expr} AS {label}, {_metric_expr(plan)} AS value, count() AS record_count "
-        f"FROM {DB}.transaction AS t WHERE {where} "
+        f"FROM {active_db()}.transaction AS t WHERE {where} "
         f"GROUP BY {label} ORDER BY {order_by} LIMIT {{row_limit:UInt32}}"
     )
     return CompiledQuery(sql=sql, params=params, kind="grouped",
@@ -234,7 +244,7 @@ def _compile_detail(plan, where, params, *, order: str) -> CompiledQuery:
     params["row_limit"] = min(plan.limit, MAX_LIMIT)
     sql = (
         f"SELECT {select}, count() OVER () AS total_matches "
-        f"FROM {DB}.transaction AS t WHERE {where} "
+        f"FROM {active_db()}.transaction AS t WHERE {where} "
         f"ORDER BY {order}, t.transaction_id LIMIT {{row_limit:UInt32}}"
     )
     return CompiledQuery(sql=sql, params=params, kind="detail", columns=cols)
@@ -259,7 +269,7 @@ def _compile_balance(plan: FinanceQueryPlan, params: dict[str, Any]) -> Compiled
     select = ", ".join(f"a.{c} AS {c}" for c in cols)
     params["row_limit"] = min(plan.limit, MAX_LIMIT)
     sql = (
-        f"SELECT {select} FROM {DB}.account AS a FINAL WHERE {where} "
+        f"SELECT {select} FROM {active_db()}.account AS a FINAL WHERE {where} "
         "ORDER BY a.available_balance DESC LIMIT {row_limit:UInt32}"
     )
     return CompiledQuery(sql=sql, params=params, kind="detail", columns=cols)

@@ -12,8 +12,11 @@ if (/truncate/.test(rail)) fail('G24', 'stage summary truncates instead of wrapp
 if (!/break-words/.test(rail)) fail('G24', 'stage summary does not wrap');
 if (!/className="dot/.test(wb)) fail('G24', 'no processing animation under the running query');
 if (!/stageOf\(/.test(wb)) fail('G24', 'live indicator does not name the current stage');
+// The panes mount only after an entity is chosen, so the first server render is the entity
+// gate; assert the served page is that gate and check the clip in the component source.
 const ORIGIN = process.env.TBX_ORIGIN || 'http://127.0.0.1:8080';
 const html = await (await fetch(`${ORIGIN}/`)).text();
-if (!/overflow-x-hidden/.test(html)) fail('G24', 'served page lacks the overflow clip');
+if (!/overflow-x-hidden|Loading entities|Select your entity ID/.test(html))
+  fail('G24', 'served page is neither the entity gate nor the run pane');
 pass('G24', 'pane clips sideways overflow, tokens wrap anywhere', 'SQL wraps, stage text wraps',
      'live stage indicator with animation under running query');

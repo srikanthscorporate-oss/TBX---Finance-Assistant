@@ -29,6 +29,7 @@ from app.agents.judge import QUALITY_SAMPLE, Judge  # noqa: E402
 from app.agents.pipeline import ConversationState, Pipeline  # noqa: E402
 from app.contracts.enums import ResponseState  # noqa: E402
 from app.llm.router import ModelRouter, Tier, UsageLedger  # noqa: E402
+from app.services import entity_token  # noqa: E402
 from app.services.cache import Cache  # noqa: E402
 
 cache = Cache(os.getenv("REDIS_URL", "redis://127.0.0.1:16379/0"),
@@ -52,12 +53,20 @@ pipe = Pipeline(ch_client(), router, ctx, judge=judge, on_event=events.append)
 out: list[str] = []
 
 
+ENTITY_TOKEN = entity_token.encode(ctx.default_entity)
+
+
 def fresh() -> ConversationState:
     return ConversationState(conversation_id=uuid.uuid4().hex)
 
 
+def ask(question: str):
+    """Every turn carries the entity token; nothing is answered before an entity is chosen."""
+    return pipe.run(question, fresh(), entity_id=ENTITY_TOKEN)
+
+
 n0 = len(calls)
-r = pipe.run("tell me a joke about cats", fresh())
+r = ask("tell me a joke about cats")
 assert r.state is ResponseState.OUT_OF_SCOPE and len(calls) == n0, (r.state, len(calls) - n0)
 assert any(e.type.value == "task_created" and "no agents" in e.label for e in events), \
     [e.label for e in events]
@@ -65,7 +74,7 @@ out.append("  relevance gate: irrelevant input refused with 0 model calls")
 
 events.clear()
 n0 = len(calls)
-r = pipe.run("How much did I spend with Zomato last month?", fresh())
+r = ask("How much did I spend with Zomato last month?")
 assert r.state is ResponseState.ANSWER, r.message
 used = len(calls) - n0
 assert used == 1, f"single-figure answer used {used} calls, expected 1 (plan only; composer templated)"
@@ -87,20 +96,27 @@ out.append(f"  anomaly agent: spawned for a counterparty with a period "
            f"({'flagged, figures grounded as facts' if flagged else 'within normal range'})")
 
 n0 = len(calls)
-r2 = pipe.run("How much did I spend with Zomato last month?", fresh())
+r2 = ask("How much did I spend with Zomato last month?")
 assert r2.state is ResponseState.ANSWER and len(calls) == n0, (r2.state, len(calls) - n0)
 assert r2.answer == r.answer
 assert r2.evidence.fact_map()["total"].value == r.evidence.fact_map()["total"].value
 out.append("  cache: identical question answered with 0 model calls, identical text")
 
 n0 = len(calls)
-r3 = pipe.run("Show me the top counterparties last quarter", fresh())
-assert r3.state is ResponseState.ANSWER and len(calls) - n0 == 2, (r3.state, r3.message, len(calls) - n0)
+r3 = ask("Show me the top counterparties I paid last quarter")
+assert r3.state is ResponseState.ANSWER and len(calls) - n0 == 1, (r3.state, r3.message, len(calls) - n0)
 assert r3.plan.intent.value == "top_counterparties" and r3.evidence.breakdown
-out.append("  grouped answer: plan + compose = 2 calls")
+assert r3.evidence.breakdown[0].label in (r3.answer or ""), r3.answer
+out.append("  top counterparties: templated, names the leader, 1 call")
 
 n0 = len(calls)
-r4 = pipe.run("What is my account balance?", fresh())
+r3b = ask("Break my spending down by channel last quarter, debits only")
+assert r3b.state is ResponseState.ANSWER and len(calls) - n0 == 2, (r3b.state, r3b.message, len(calls) - n0)
+assert r3b.evidence.breakdown
+out.append("  grouped answer without a template: plan + compose = 2 calls")
+
+n0 = len(calls)
+r4 = ask("What is my account balance?")
 assert r4.state is ResponseState.ANSWER and len(calls) - n0 == 1, (r4.state, r4.message, len(calls) - n0)
 assert "balance_total" in r4.evidence.fact_keys()
 out.append("  balance: templated from the account table in 1 call")

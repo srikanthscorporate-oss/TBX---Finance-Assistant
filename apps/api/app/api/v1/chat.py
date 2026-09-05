@@ -28,9 +28,9 @@ class ChatRequest(BaseModel):
     """
     message: str = Field(default="", max_length=2000)
     conversation_id: str | None = None
-    resolved_value: str | None = Field(default=None, max_length=200)
+    resolved_value: str | None = Field(default=None, max_length=512)
     resolved_field: str | None = Field(default=None, max_length=32)
-    entity_id: str | None = Field(default=None, max_length=64)
+    entity_id: str | None = Field(default=None, max_length=512)
     model: str | None = "auto"
 
 

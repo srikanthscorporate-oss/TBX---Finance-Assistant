@@ -161,7 +161,8 @@ def template_answer(evidence: EvidencePackage, intent: str) -> ComposedAnswer | 
     when = f" in {period}" if period else ""
     where = f" from account {acct}" if acct else ""
     recs = f"across {n:,} transactions" if n else "with no matching transactions"
-    kind = "received" if ent.get("transaction_type") == "credit" else "spent"
+    tt = ent.get("transaction_type")
+    kind = "received" if tt == "credit" else "spent" if tt == "debit" else "moved"
 
     text: str | None = None
     if intent == "counterparty_spend" and "total" in f and cp:
@@ -181,8 +182,37 @@ def template_answer(evidence: EvidencePackage, intent: str) -> ComposedAnswer | 
                     f"from account {r.get('account', '')}.")
         else:
             text = f"{f['count'].formatted} transactions match {label.lower()} {ref}."
+    elif intent == "top_counterparties" and "top_label" in f and "top_value" in f:
+        verb = "received the most from" if tt == "credit" else "paid the most to"
+        rest = ""
+        if len(evidence.breakdown) > 1:
+            others = ", ".join(b.label for b in evidence.breakdown[1:4])
+            rest = f" Next were {others}."
+        text = (f"You {verb} {f['top_label'].formatted}{when}{where}: "
+                f"{f['top_value'].formatted} across {n:,} transactions in total.{rest}")
+    elif intent == "account_list" and evidence.records:
+        rows = evidence.records[:8]
+        listed = "; ".join(f"{r.get('account')} at {r.get('bank')}" for r in rows)
+        more = f" (showing {len(rows)} of {f['count'].formatted})" if len(evidence.records) > len(rows) else ""
+        banks = f["bank_count"].formatted if "bank_count" in f else ""
+        across = f" across {banks} banks" if banks and banks != "1" else ""
+        text = f"You have {f['count'].formatted} accounts{across}{more}: {listed}."
     elif intent == "balance" and "balance_total" in f:
-        text = f"Your available balance is {f['balance_total'].formatted} across {f['count'].formatted} accounts."
+        n = int(f["count"].value)
+        rows = evidence.records[:6]
+        listed = "; ".join(
+            f"{r.get('account')} at {r.get('bank')} holding {r.get('available_balance_formatted')}"
+            for r in rows)
+        if n == 1 and rows:
+            text = (f"You have one account, {rows[0].get('account')} at {rows[0].get('bank')}, "
+                    f"holding {f['balance_total'].formatted}.")
+        elif listed:
+            more = f" (showing {len(rows)} of {n})" if n > len(rows) else ""
+            text = (f"You have {f['count'].formatted} accounts{more}: {listed}. "
+                    f"Together they hold {f['balance_total'].formatted}.")
+        else:
+            text = (f"Your available balance is {f['balance_total'].formatted} across "
+                    f"{f['count'].formatted} accounts.")
     elif intent == "largest_transactions" and evidence.records:
         r0 = evidence.records[0]
         n = len(evidence.records)

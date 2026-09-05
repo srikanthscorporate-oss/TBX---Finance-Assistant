@@ -6,7 +6,8 @@ from typing import Callable, Iterable
 
 from pydantic import ValidationError
 
-from ..contracts.enums import Intent, Metric, ReferenceKind, ResponseState
+from ..contracts.enums import (GroupBy, Intent, Metric, ReferenceKind, ResponseState,
+                              TransactionType)
 from ..contracts.evidence import EvidencePackage
 from ..llm.router import AllModelsRateLimited, Tier
 from ..contracts.events import AgentEvent, EventType
@@ -17,6 +18,7 @@ from ..services import confidence as conf
 from ..services import verification as verif
 from ..services.compiler import CompilationError, compile_plan
 from ..services.dates import DateResolutionError, resolve
+from ..services import entity_token
 from ..services.crypto import FieldCipher, KeyError_
 from ..services.resolver import MatchKind, resolve_account, resolve_counterparty
 from . import anomaly as anomaly_agent
@@ -38,7 +40,28 @@ PERIOD_OPTIONS = [
     ("this_month", "This month"), ("last_month", "Last month"),
     ("last_90_days", "Last 90 days"), ("all_time", "All time"),
 ]
-"""Offered when a list question names no period; value is the RelativeRange key."""
+"""Offered when a question names no period; value is the RelativeRange key."""
+
+TYPE_OPTIONS = [
+    ("debit", "Money out (debits)"), ("credit", "Money in (credits)"), ("both", "Both"),
+]
+"""Offered when a question does not say whether it means money out, in, or both."""
+
+PERIOD_REQUIRED = {
+    Intent.SPEND_SUMMARY, Intent.COUNTERPARTY_SPEND, Intent.ACCOUNT_SUMMARY,
+    Intent.TRANSACTION_LOOKUP, Intent.LARGEST_TRANSACTIONS, Intent.TOP_COUNTERPARTIES,
+    Intent.CHANNEL_BREAKDOWN, Intent.TREND, Intent.ANOMALY_SCAN,
+}
+"""Intents whose figure changes with the window, so an unstated period is asked for."""
+
+TYPE_REQUIRED = PERIOD_REQUIRED - {Intent.ANOMALY_SCAN}
+"""Intents where debits and credits give different answers."""
+
+ENTITY_SWITCH_MESSAGE = (
+    "I don't have any Idea what you're talking about. This conversation is scoped to the "
+    "entity you picked when it started, so I can't answer for a different one here. "
+    "Please clear the history, select your entity ID, and start chatting."
+)
 
 __all__ = ["Pipeline", "ConversationState", "DatasetContext", "RunContext", "CAPABILITIES"]
 
@@ -66,10 +89,9 @@ class Pipeline:
         rc = RunContext(run_id=f"run_{uuid.uuid4().hex[:12]}",
                         conversation_id=state.conversation_id,
                         on_event=self.on_event)
-        if entity_id is not None:
-            state.entity_id = entity_id or None
-        elif state.entity_id is None:
-            state.entity_id = self.ctx.default_entity
+        locked = self._lock_entity(state, entity_id, rc)
+        if locked is not None:
+            return locked
         try:
             pinned = self.planner.router.spec_for_choice(model_choice)
         except ValueError as e:
@@ -114,6 +136,9 @@ class Pipeline:
         fingerprint equals the previous plan's asks for clarification instead of
         re-reporting the same figure.
         """
+        if not state.entity_id:
+            return self._ask_entity(rc, state, question)
+
         rel = relevance.assess(question, self.ctx, state.last_plan is not None)
         if not rel.relevant:
             rc.emit(EventType.TASK_CREATED, "Judge: not relevant, no agents spawned",
@@ -195,20 +220,43 @@ class Pipeline:
                         conversation_id=state.conversation_id, on_event=self.on_event)
         plan, question = state.pending_plan, state.pending_question
         field = field or state.pending_field
-        if plan is None or not field:
-            rc.emit(EventType.RUN_FAILED, "Nothing to clarify")
-            return self._respond(rc, ResponseState.ERROR,
-                                 message="There is no pending question to complete.")
         try:
             pinned = self.planner.router.spec_for_choice(model_choice)
         except ValueError as e:
             return self._respond(rc, ResponseState.ERROR, message=str(e))
 
+        if field == "entity":
+            bound = self._bind_entity(value, state, rc)
+            if bound is not None:
+                return bound
+            state.pending_field = None
+            if plan is None:
+                state.pending_question = None
+                return self._run(question or "", state, rc, pinned)
+        if plan is None or not field:
+            rc.emit(EventType.RUN_FAILED, "Nothing to clarify")
+            return self._respond(rc, ResponseState.ERROR,
+                                 message="There is no pending question to complete.")
+
         rc.emit(EventType.RUN_STARTED, "Completing your question", question=question,
                 turn=state.turns + 1, model=pinned.model if pinned else "auto")
         rc.emit(EventType.SCOPE_CHECKED, "In scope")
+        if field != "entity" and not state.entity_id:
+            return self._ask_entity(rc, state, question)
 
-        if field == "counterparty":
+        if field == "entity":
+            plan = plan.model_copy(update={"entity_id": state.entity_id})
+        elif field == "transaction_type":
+            if value == "both":
+                plan = plan.model_copy(update={"transaction_type": None,
+                                               "include_both_types": True})
+            else:
+                try:
+                    plan = plan.model_copy(update={"transaction_type": TransactionType(value)})
+                except ValueError:
+                    return self._respond(rc, ResponseState.ERROR,
+                                         message="That option is not a transaction type.")
+        elif field == "counterparty":
             rec = next((c for c in self.ctx.counterparties if c.name == value), None)
             if rec is None:
                 rc.emit(EventType.RUN_FAILED, "Unknown counterparty", value=value)
@@ -468,6 +516,19 @@ class Pipeline:
                     capabilities=CAPABILITIES)
             best = res.best
             assert best is not None
+            if res.kind is MatchKind.UNIQUE_FUZZY:
+                rc.emit(EventType.CLARIFICATION_REQUIRED,
+                        f"'{plan.counterparty_name}' is not an exact name; confirming")
+                return self._respond(
+                    rc, ResponseState.CLARIFICATION_REQUIRED,
+                    clarification=Clarification(
+                        question=f"I don't have a counterparty called exactly "
+                                 f"“{plan.counterparty_name}”. Did you mean one of these?",
+                        field="counterparty",
+                        options=[ClarificationOption(
+                            label=c.record.name, value=c.record.name,
+                            hint=f"{c.record.txn_count:,} transactions via {c.record.channel}")
+                            for c in res.candidates]))
             plan.counterparty = best.name
             plan.counterparty_name = best.name
             rc.emit(EventType.ENTITY_RESOLVED, f"Counterparty: {best.name}",
@@ -505,9 +566,8 @@ class Pipeline:
             if match is None:
                 match, score = MatchKind.EXACT, 1.0
 
-        if (plan.intent in {Intent.TRANSACTION_LOOKUP, Intent.LARGEST_TRANSACTIONS}
-                and plan.date_range is None and not plan.reference):
-            rc.emit(EventType.CLARIFICATION_REQUIRED, "List question without a period")
+        if plan.intent in PERIOD_REQUIRED and plan.date_range is None and not plan.reference:
+            rc.emit(EventType.CLARIFICATION_REQUIRED, "Question without a period")
             return self._respond(
                 rc, ResponseState.CLARIFICATION_REQUIRED,
                 clarification=Clarification(
@@ -516,7 +576,87 @@ class Pipeline:
                     options=[ClarificationOption(label=lbl, value=key)
                              for key, lbl in PERIOD_OPTIONS]))
 
+        if (plan.intent in TYPE_REQUIRED and plan.transaction_type is None
+                and not plan.include_both_types and not plan.reference
+                and plan.group_by is not GroupBy.TRANSACTION_TYPE):
+            rc.emit(EventType.CLARIFICATION_REQUIRED, "Question without a debit/credit side")
+            return self._respond(
+                rc, ResponseState.CLARIFICATION_REQUIRED,
+                clarification=Clarification(
+                    question="Should I count money going out, money coming in, or both?",
+                    field="transaction_type",
+                    options=[ClarificationOption(label=lbl, value=key)
+                             for key, lbl in TYPE_OPTIONS]))
+
         return match, score
+
+    def _lock_entity(self, state: ConversationState, token: str | None,
+                     rc: RunContext) -> AssistantResponse | None:
+        """Bind the conversation to one entity for its whole life.
+
+        A different entity arriving on a conversation that has already answered something
+        is refused rather than silently re-scoped: the earlier turns and the parked plan
+        belong to the first entity.
+        """
+        if not token:
+            return None
+        try:
+            chosen = entity_token.decode(token)
+        except entity_token.BadEntityToken:
+            rc.emit(EventType.RUN_FAILED, "Entity token did not decrypt")
+            return self._respond(rc, ResponseState.ERROR,
+                                 message="That entity selection was not recognised. "
+                                         "Please select your entity ID again.")
+        if chosen not in self.ctx.entities:
+            rc.emit(EventType.RUN_FAILED, "Unknown entity")
+            return self._respond(rc, ResponseState.ERROR,
+                                 message="That entity is not in these records.")
+        if state.entity_id and chosen != state.entity_id:
+            rc.emit(EventType.SCOPE_CHECKED, "Entity switched mid-conversation",
+                    had=entity_token.mask(state.entity_id), asked=entity_token.mask(chosen))
+            return self._respond(rc, ResponseState.OUT_OF_SCOPE,
+                                 message=ENTITY_SWITCH_MESSAGE, capabilities=CAPABILITIES)
+        state.entity_id = chosen
+        return None
+
+    def _bind_entity(self, value: str, state: ConversationState,
+                     rc: RunContext) -> AssistantResponse | None:
+        """Attach a chosen entity token to the conversation, or refuse a switch."""
+        try:
+            chosen = entity_token.decode(value)
+        except entity_token.BadEntityToken:
+            return self._respond(rc, ResponseState.ERROR,
+                                 message="That entity selection was not recognised.")
+        if chosen not in self.ctx.entities:
+            return self._respond(rc, ResponseState.ERROR,
+                                 message="That entity is not in these records.")
+        if state.entity_id and chosen != state.entity_id:
+            return self._respond(rc, ResponseState.OUT_OF_SCOPE,
+                                 message=ENTITY_SWITCH_MESSAGE, capabilities=CAPABILITIES)
+        state.entity_id = chosen
+        rc.emit(EventType.ENTITY_RESOLVED, f"Entity: {entity_token.mask(chosen)}",
+                entity=entity_token.mask(chosen), match="chosen", score=1.0)
+        return None
+
+    def _ask_entity(self, rc: RunContext, state: ConversationState,
+                    question: str | None) -> AssistantResponse:
+        """No entity chosen yet: every figure is entity-scoped, so nothing can be answered.
+
+        The question is parked so answering with a token completes it without retyping.
+        """
+        state.pending_plan = None
+        state.pending_question = question
+        state.pending_field = "entity"
+        rc.emit(EventType.CLARIFICATION_REQUIRED, "No entity selected")
+        return self._respond(
+            rc, ResponseState.CLARIFICATION_REQUIRED,
+            clarification=Clarification(
+                question="Whose records should I read? Select your entity ID to start.",
+                field="entity",
+                options=[ClarificationOption(label=entity_token.mask(e) or e,
+                                             value=entity_token.encode(e),
+                                             hint="entity ID")
+                         for e in self.ctx.entities[:25]]))
 
     def _refuse(self, rc: RunContext, scope: str, reason: str | None) -> AssistantResponse:
         """Refuse with a fixed message and guided questions; the model's reason goes to the log."""

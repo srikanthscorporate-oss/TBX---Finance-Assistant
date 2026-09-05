@@ -159,8 +159,42 @@ file with missing required columns rather than loading partial data.
 Everything downstream re-derives itself from what was loaded: the dataset's date
 bounds, entities, accounts, counterparties, banks and currency are read from the
 database at startup, which is why relative periods stay anchored to the data. A
-conversation is scoped to one entity (`entity_id` on the chat request; the
-default is the entity with the most transactions).
+conversation is scoped to one entity and stays there for its whole life.
+
+### Entity scoping
+
+Nothing is answered before an entity is chosen. The browser never sees a raw
+entity id: `/api/v1/entities` returns an AES-256-GCM token per entity plus a
+masked label (`********…7555`), the chat request carries the token back as
+`entity_id`, and `apps/api/app/services/entity_token.py` decrypts it before the
+compiler binds it. The masked form is what appears in evidence and in the UI.
+
+The first token seen on a conversation binds it. A different token arriving on
+the same conversation is refused with
+
+> I don't have any Idea what you're talking about.
+
+and an instruction to clear the history and select the entity ID again, because
+the earlier turns and any parked plan belong to the first entity. The web UI
+enforces the same rule: it prompts for an entity on first load, remembers the
+choice and the transcript across reloads, and refuses a switch until
+**Clear History** (top right) resets both, server-side and in the browser.
+
+### The assistant asks rather than assumes
+
+A figure that depends on an unstated choice is never guessed. One question per
+turn, answered from a dropdown:
+
+| Unstated | Question |
+|---|---|
+| entity | Whose records should I read? |
+| ambiguous or inexact counterparty | Which one do you mean? |
+| two accounts sharing the last four digits | Which account? |
+| no period on a period-sensitive intent | Which period should I look at? |
+| debit or credit not stated | Money out, money in, or both? |
+
+"How much did I **spend** with Zomato" states the side, so only the period is
+asked. A balance or a reference lookup is asked for neither.
 
 ### Sensitive fields
 
@@ -183,8 +217,9 @@ in the database:
 ### Bringing your own MySQL database
 
 The **Data Source** page (right of Observability) takes a live MySQL endpoint -
-either a link such as `mysql://user:password@host:3306/db` or the separate
-host, port, database, user and password fields - and:
+a link such as `mysql://user:password@host:3306/db`, optionally with the port,
+database, user and password fields alongside it (they override the link, and a
+link carrying everything connects on its own) - and:
 
 1. validates it (a live, readable endpoint with rows shows **Data Available**),
 2. lists every table with row counts and a preview you can page through,
@@ -198,9 +233,18 @@ becomes `available_balance`, and so on. Both an account table and a transaction
 table must resolve; a missing balance is reported, never defaulted to zero. The
 endpoint is only ever read, credentials stay in memory, and the ingest runs
 through the same encryption and narration parsing as the CSV loader, so nothing
-downstream - planner, compiler, verification, evidence - changes. Initialising
-**replaces** the currently loaded dataset; `scripts/load_dataset.py` restores
-the bundled one.
+downstream - planner, compiler, verification, evidence - changes.
+
+Initialising loads into a **sibling database** (`tbx_finance_mysql`), never the
+bundled `tbx_finance`, and only then repoints the assistant: the demo dataset
+stays intact, and the test suite and verify gates - which recompute their
+expected values from `data/raw/*.csv` - keep passing while your endpoint is
+live. Which database is active is held in `app/services/active_db.py`, persisted
+in Redis so it survives a restart, and shown on the page; **Use the bundled
+dataset** (or `POST /api/v1/sources/reset`) switches back, leaving the ingested
+database in place. The switch happens only after a clean load and is rolled back
+if the new tables cannot be read, so a half-loaded source can never become the
+thing the chatbot answers from.
 
 To try it locally, the compose stack includes a MySQL service on
 `127.0.0.1:13306` (host `mysql` from inside Docker). Seed it from the bundled
@@ -305,8 +349,9 @@ is locked down:
   cannot be normalised into a match for a different real counterparty.
 - **Account numbers and UTRs encrypted at rest** (AES-256-GCM), UTR lookup by
   HMAC blind index, decryption only inside the API, account numbers shown
-  masked. `entity_id` is set by the API from the request, never by the model,
-  and bound on every query.
+  masked. `entity_id` is an encrypted token from the request, never set by the
+  model, decrypted server-side and bound on every query; it is shown masked and
+  the raw id never leaves the API.
 - **Admin surfaces are not on the public listener.** A source-IP allowlist would
   be useless behind a tunnel - all traffic arrives from a Docker-internal
   address - so `/api/v1/admin` returns 404 publicly and lives on an unpublished

@@ -9,14 +9,26 @@ ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "evaluation" / "results" / "latest.json"
 OUT = ROOT / "docs" / "sample-questions.md"
 
-SHOWCASE = ["C01", "P01", "P01.1", "F01", "T01", "H04", "B02", "X01", "X03",
-            "L03", "L03.c", "A01", "A01.c", "D01", "D04", "O01", "Z01"]
+SHOWCASE = ["E04", "E01", "E02",
+            "C01", "P01", "P01.1", "F01", "T01", "H04", "B02", "X01", "X03",
+            "L03", "L03.c1", "L03.c2",
+            "A02", "A02.c1", "A02.c2", "A02.c3",
+            "A05", "A05.c1", "K05", "D01", "D04", "O01", "Z01"]
 
 NOTES = {
-    "A01": "“Swiggy” matches SWIGGY and SWIGGY INSTAMART. The assistant asks with a dropdown instead of picking one.",
-    "A01.c": "The chosen option completes the same question without a second planning call.",
+    "E04": "Nothing is answered before an entity is chosen. Each option carries an opaque token and a masked label; the real id never leaves the API.",
+    "E01": "The first entity token binds the conversation for its whole life.",
+    "E02": "A different entity token on the same conversation is refused outright rather than silently re-scoped.",
+    "A02": "“Swiggy” matches SWIGGY and SWIGGY INSTAMART. The assistant asks with a dropdown instead of picking one.",
+    "A02.c1": "Name settled, but the question named no window, so the period is asked for next.",
+    "A02.c2": "Still nothing assumed about the side: debits and credits give different counts.",
+    "A02.c3": "Three answers later the figure is computed once, from the filters the user actually chose.",
+    "A05": "“amazon” is only a fuzzy match, so it is confirmed rather than guessed at.",
+    "A05.c1": "The confirmed name completes the same question without a second planning call.",
+    "K05": "No account ends in those digits. Reported as absent, with the accounts to choose from shown by their last four only.",
     "L03": "A list with no period asks for one rather than scanning everything.",
-    "L03.c": "The chosen period completes the list; the count is the true match count, not the rows shown.",
+    "L03.c1": "Period settled; the side is still unstated, so that is asked next.",
+    "L03.c2": "The completed list; the count is the true match count, not the rows shown.",
     "D01": "There is no reconciliation field in a bank statement, so no figure is invented.",
     "D04": "No such counterparty. Reported as absent rather than answered with zero.",
     "O01": "Outside the dataset entirely.",
@@ -46,7 +58,12 @@ def main() -> int:
         f"- **Planner:** `{rep.get('planner', 'unknown')}` - {rep.get('caveat', '')}",
         f"- **Dataset version:** `{rep.get('dataset_version') or 'unknown'}`",
         f"- **Overall accuracy:** {rep['overall_accuracy']:.1%} "
-        f"across {rep['turns']} turns",
+        f"across {rep['turns']} turns"
+        + (f" ({rep['overall_accuracy_excluding_entity_id_leak']:.1%} with the "
+           "entity-id opacity check set aside)"
+           if rep.get("overall_accuracy_excluding_entity_id_leak") is not None else ""),
+        f"- **Entity scoping:** {rep.get('entity_scoping_ok', 0):.0%} of answers were "
+        f"scoped to the masked entity the conversation was locked to",
         f"- **Grounding rate:** {rep['grounding_rate']:.0%} · "
         f"**Hallucination-free:** {rep['hallucination_free_rate']:.0%} · "
         f"**Masking:** {rep.get('masking_rate', 0):.0%}",
@@ -62,7 +79,9 @@ def main() -> int:
         r = by_id.get(qid)
         if not r:
             continue
-        lines.append(f"### {r['question']}" + ("  (option chosen from the dropdown)" if qid.endswith(".c") else ""))
+        step = ".c" in qid
+        lines.append(f"### {r['question']}"
+                     + ("  (option chosen from the dropdown)" if step else ""))
         lines.append("")
         said = r.get("answer") or r.get("clarification") or r.get("message") or ""
         lines.append(f"> {said}")

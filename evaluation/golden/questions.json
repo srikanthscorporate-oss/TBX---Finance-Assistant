@@ -6,6 +6,7 @@
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "last_month",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 434265859.19,
@@ -24,6 +25,7 @@
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "month_before_last",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 466661785.1,
@@ -42,6 +44,7 @@
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "last_quarter",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 1421849568.06,
@@ -60,6 +63,7 @@
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "last_7_days",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 98160784.2,
@@ -78,6 +82,7 @@
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "last_30_days",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 446937203.73,
@@ -96,6 +101,7 @@
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "today",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 12543850.72,
@@ -114,6 +120,7 @@
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "yesterday",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 17640841.89,
@@ -132,6 +139,7 @@
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "this_year",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 3660797698.16,
@@ -202,36 +210,38 @@
   },
   {
     "id": "N01",
-    "question": "How many transactions were there last month?",
+    "question": "How many debit transactions were there last month?",
     "category": "counts",
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "last_month",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "count": {
-        "value": 1976,
+        "value": 1226,
         "tolerance": 0
       },
       "record_count": {
-        "value": 1976,
+        "value": 1226,
         "tolerance": 0
       }
     }
   },
   {
     "id": "N02",
-    "question": "How many transactions were there today?",
+    "question": "How many credit transactions were there today?",
     "category": "counts",
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "today",
+    "expected_transaction_type": "credit",
     "expected_facts": {
       "count": {
-        "value": 53,
+        "value": 18,
         "tolerance": 0
       },
       "record_count": {
-        "value": 53,
+        "value": 18,
         "tolerance": 0
       }
     }
@@ -244,6 +254,7 @@
     "expected_intent": "counterparty_spend",
     "expected_counterparty": "SWIGGY INSTAMART",
     "expected_period": "last_month",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 6061435.07,
@@ -263,6 +274,7 @@
     "expected_intent": "counterparty_spend",
     "expected_counterparty": "ZOMATO",
     "expected_period": "last_quarter",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 33401456.27,
@@ -282,6 +294,7 @@
     "expected_intent": "counterparty_spend",
     "expected_counterparty": "AMAZON PAY INDIA",
     "expected_period": "last_30_days",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 8996912.31,
@@ -295,19 +308,20 @@
   },
   {
     "id": "C04",
-    "question": "How many transactions with Zomato in the last 90 days?",
+    "question": "How many debit transactions with Zomato in the last 90 days?",
     "category": "counterparty",
     "expected_state": "answer",
     "expected_intent": "counterparty_spend",
     "expected_counterparty": "ZOMATO",
     "expected_period": "last_90_days",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "count": {
-        "value": 173,
+        "value": 100,
         "tolerance": 0
       },
       "record_count": {
-        "value": 173,
+        "value": 100,
         "tolerance": 0
       }
     }
@@ -320,6 +334,7 @@
     "expected_intent": "counterparty_spend",
     "expected_counterparty": "AIRTEL",
     "expected_period": "this_year",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 130744375.72,
@@ -332,25 +347,6 @@
     }
   },
   {
-    "id": "C06",
-    "question": "How much did I pay Uber in the last 6 months?",
-    "category": "counterparty",
-    "expected_state": "answer",
-    "expected_intent": "counterparty_spend",
-    "expected_counterparty": "UBER INDIA",
-    "expected_period": "last_6_months",
-    "expected_facts": {
-      "total": {
-        "value": 89290566.5,
-        "tolerance": 0.02
-      },
-      "record_count": {
-        "value": 251,
-        "tolerance": 0
-      }
-    }
-  },
-  {
     "id": "C07",
     "question": "How much did I spend with Bigbasket last month?",
     "category": "counterparty",
@@ -358,6 +354,7 @@
     "expected_intent": "counterparty_spend",
     "expected_counterparty": "BIGBASKET",
     "expected_period": "last_month",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 13541902.69,
@@ -371,91 +368,137 @@
   },
   {
     "id": "C08",
-    "question": "How many transactions with Bigbasket were there last month?",
+    "question": "How many debits with Bigbasket were there last month?",
     "category": "counterparty",
     "expected_state": "answer",
     "expected_intent": "counterparty_spend",
     "expected_counterparty": "BIGBASKET",
     "expected_period": "last_month",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "count": {
-        "value": 71,
+        "value": 43,
         "tolerance": 0
       },
       "record_count": {
-        "value": 71,
+        "value": 43,
         "tolerance": 0
       }
     }
   },
   {
+    "id": "C06",
+    "question": "How much did I pay Uber in the last 6 months?",
+    "category": "counterparty",
+    "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "counterparty",
+        "value": "UBER INDIA",
+        "expect": {
+          "expected_intent": "counterparty_spend",
+          "expected_counterparty": "UBER INDIA",
+          "expected_period": "last_6_months",
+          "expected_transaction_type": "debit",
+          "expected_facts": {
+            "total": {
+              "value": 89290566.5,
+              "tolerance": 0.02
+            },
+            "record_count": {
+              "value": 251,
+              "tolerance": 0
+            }
+          },
+          "expected_state": "answer"
+        }
+      }
+    ],
+    "expected_clarification_field": "counterparty",
+    "expected_options": [
+      "UBER INDIA"
+    ]
+  },
+  {
     "id": "F01",
-    "question": "List transactions under 500 rupees last month",
+    "question": "List the debit transactions under 500 rupees last month",
     "category": "amount_filter",
     "expected_state": "answer",
     "expected_intent": "transaction_lookup",
     "expected_period": "last_month",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "count": {
-        "value": 118,
+        "value": 74,
         "tolerance": 0
       },
       "record_count": {
-        "value": 118,
+        "value": 74,
         "tolerance": 0
+      },
+      "total": {
+        "value": 23653.56,
+        "tolerance": 0.02
       }
     }
   },
   {
     "id": "F02",
-    "question": "Show transactions over ₹1,00,000 in the last 90 days",
+    "question": "Show debits over ₹1,00,000 in the last 90 days",
     "category": "amount_filter",
     "expected_state": "answer",
     "expected_intent": "transaction_lookup",
     "expected_period": "last_90_days",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "count": {
-        "value": 1697,
+        "value": 1028,
         "tolerance": 0
       },
       "record_count": {
-        "value": 1697,
+        "value": 1028,
         "tolerance": 0
       }
     }
   },
   {
     "id": "F03",
-    "question": "Which transactions were between 1,000 and 5,000 in the last 7 days?",
+    "question": "Which credits were between 1,000 and 5,000 in the last 7 days?",
     "category": "amount_filter",
     "expected_state": "answer",
     "expected_intent": "transaction_lookup",
     "expected_period": "last_7_days",
+    "expected_transaction_type": "credit",
     "expected_facts": {
       "count": {
-        "value": 260,
+        "value": 91,
         "tolerance": 0
       },
       "record_count": {
-        "value": 260,
+        "value": 91,
         "tolerance": 0
+      },
+      "total": {
+        "value": 270741.82,
+        "tolerance": 0.02
       }
     }
   },
   {
     "id": "F04",
-    "question": "How many transactions under 500 were there last month?",
+    "question": "How many debit transactions under 500 were there last month?",
     "category": "amount_filter",
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "last_month",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "count": {
-        "value": 118,
+        "value": 74,
         "tolerance": 0
       },
       "record_count": {
-        "value": 118,
+        "value": 74,
         "tolerance": 0
       }
     }
@@ -467,6 +510,7 @@
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "last_month",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 431774820.41,
@@ -486,6 +530,7 @@
     "expected_intent": "spend_summary",
     "expected_period": "last_month",
     "expected_channel": "UPI",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "total": {
         "value": 87438623.28,
@@ -499,19 +544,20 @@
   },
   {
     "id": "H02",
-    "question": "How many NEFT transactions were there in the last 30 days?",
+    "question": "How many NEFT debits were there in the last 30 days?",
     "category": "channel",
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "last_30_days",
     "expected_channel": "NEFT",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "count": {
-        "value": 621,
+        "value": 366,
         "tolerance": 0
       },
       "record_count": {
-        "value": 621,
+        "value": 366,
         "tolerance": 0
       }
     }
@@ -520,24 +566,39 @@
     "id": "H03",
     "question": "List IMPS transactions in the last 7 days",
     "category": "channel",
-    "expected_state": "answer",
-    "expected_intent": "transaction_lookup",
-    "expected_period": "last_7_days",
-    "expected_channel": "IMPS",
-    "expected_facts": {
-      "count": {
-        "value": 80,
-        "tolerance": 0
-      },
-      "record_count": {
-        "value": 80,
-        "tolerance": 0
-      },
-      "total": {
-        "value": 26552421.68,
-        "tolerance": 0.02
+    "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "transaction_type",
+        "value": "both",
+        "expect": {
+          "expected_intent": "transaction_lookup",
+          "expected_period": "last_7_days",
+          "expected_channel": "IMPS",
+          "expected_facts": {
+            "count": {
+              "value": 80,
+              "tolerance": 0
+            },
+            "record_count": {
+              "value": 80,
+              "tolerance": 0
+            },
+            "total": {
+              "value": 26552421.68,
+              "tolerance": 0.02
+            }
+          },
+          "expected_state": "answer"
+        }
       }
-    }
+    ],
+    "expected_clarification_field": "transaction_type",
+    "expected_options": [
+      "debit",
+      "credit",
+      "both"
+    ]
   },
   {
     "id": "H04",
@@ -546,6 +607,7 @@
     "expected_state": "answer",
     "expected_intent": "channel_breakdown",
     "expected_period": "last_month",
+    "expected_transaction_type": "debit",
     "expected_grouped": true,
     "expected_facts": {
       "top_label": {
@@ -574,24 +636,39 @@
     "id": "L01",
     "question": "Show me the transactions with Zomato in the last 7 days",
     "category": "lists",
-    "expected_state": "answer",
-    "expected_intent": "transaction_lookup",
-    "expected_counterparty": "ZOMATO",
-    "expected_period": "last_7_days",
-    "expected_facts": {
-      "count": {
-        "value": 14,
-        "tolerance": 0
-      },
-      "record_count": {
-        "value": 14,
-        "tolerance": 0
-      },
-      "total": {
-        "value": 4778027.68,
-        "tolerance": 0.02
+    "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "transaction_type",
+        "value": "both",
+        "expect": {
+          "expected_intent": "transaction_lookup",
+          "expected_counterparty": "ZOMATO",
+          "expected_period": "last_7_days",
+          "expected_facts": {
+            "count": {
+              "value": 14,
+              "tolerance": 0
+            },
+            "record_count": {
+              "value": 14,
+              "tolerance": 0
+            },
+            "total": {
+              "value": 4778027.68,
+              "tolerance": 0.02
+            }
+          },
+          "expected_state": "answer"
+        }
       }
-    }
+    ],
+    "expected_clarification_field": "transaction_type",
+    "expected_options": [
+      "debit",
+      "credit",
+      "both"
+    ]
   },
   {
     "id": "L02",
@@ -621,32 +698,63 @@
     "question": "List transactions less than 500 rupees",
     "category": "lists",
     "expected_state": "clarification_required",
-    "expected_intent": "transaction_lookup",
-    "expected_clarification_field": "date_range",
-    "clarify_with": {
-      "value": "last_month",
-      "field": "date_range",
-      "expected_state": "answer",
-      "expected_period": "last_month",
-      "expected_facts": {
-        "count": {
-          "value": 118,
-          "tolerance": 0
-        },
-        "record_count": {
-          "value": 118,
-          "tolerance": 0
+    "resolutions": [
+      {
+        "field": "date_range",
+        "value": "last_month",
+        "expect": {
+          "expected_state": "clarification_required",
+          "expected_clarification_field": "transaction_type",
+          "expected_options": [
+            "debit",
+            "credit",
+            "both"
+          ]
+        }
+      },
+      {
+        "field": "transaction_type",
+        "value": "debit",
+        "expect": {
+          "expected_intent": "transaction_lookup",
+          "expected_period": "last_month",
+          "expected_transaction_type": "debit",
+          "expected_facts": {
+            "count": {
+              "value": 74,
+              "tolerance": 0
+            },
+            "record_count": {
+              "value": 74,
+              "tolerance": 0
+            },
+            "total": {
+              "value": 23653.56,
+              "tolerance": 0.02
+            }
+          },
+          "expected_state": "answer"
         }
       }
-    }
+    ],
+    "expected_clarification_field": "date_range",
+    "expected_options": [
+      "last_7_days",
+      "last_30_days",
+      "this_month",
+      "last_month",
+      "last_90_days",
+      "all_time"
+    ]
   },
   {
     "id": "G01",
-    "question": "What were the largest transactions last month?",
+    "question": "What were the largest debits last month?",
     "category": "largest",
     "expected_state": "answer",
     "expected_intent": "largest_transactions",
     "expected_period": "last_month",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "count": {
         "value": 1226,
@@ -684,12 +792,50 @@
     }
   },
   {
+    "id": "G03",
+    "question": "What were the largest transactions last month?",
+    "category": "largest",
+    "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "transaction_type",
+        "value": "credit",
+        "expect": {
+          "expected_intent": "largest_transactions",
+          "expected_period": "last_month",
+          "expected_transaction_type": "credit",
+          "expected_facts": {
+            "count": {
+              "value": 750,
+              "tolerance": 0
+            },
+            "record_count": {
+              "value": 750,
+              "tolerance": 0
+            }
+          },
+          "expected_first_record": {
+            "amount": 2491211.77
+          },
+          "expected_state": "answer"
+        }
+      }
+    ],
+    "expected_clarification_field": "transaction_type",
+    "expected_options": [
+      "debit",
+      "credit",
+      "both"
+    ]
+  },
+  {
     "id": "T01",
     "question": "Who did I pay the most last month?",
     "category": "top_counterparties",
     "expected_state": "answer",
     "expected_intent": "top_counterparties",
     "expected_period": "last_month",
+    "expected_transaction_type": "debit",
     "expected_grouped": true,
     "expected_facts": {
       "top_label": {
@@ -721,6 +867,7 @@
     "expected_state": "answer",
     "expected_intent": "top_counterparties",
     "expected_period": "last_90_days",
+    "expected_transaction_type": "debit",
     "expected_grouped": true,
     "expected_facts": {
       "top_label": {
@@ -752,6 +899,7 @@
     "expected_state": "answer",
     "expected_intent": "top_counterparties",
     "expected_period": "this_year",
+    "expected_transaction_type": "debit",
     "expected_grouped": true,
     "expected_facts": {
       "top_label": {
@@ -782,6 +930,7 @@
     "category": "balance",
     "expected_state": "answer",
     "expected_intent": "balance",
+    "expected_no_period": true,
     "expected_facts": {
       "balance_total": {
         "value": 187756664.45,
@@ -804,6 +953,7 @@
     "category": "balance",
     "expected_state": "answer",
     "expected_intent": "balance",
+    "expected_no_period": true,
     "expected_facts": {
       "balance_total": {
         "value": 83339508.82,
@@ -829,6 +979,7 @@
     "category": "reference",
     "expected_state": "answer",
     "expected_intent": "reference_lookup",
+    "expected_no_period": true,
     "expected_facts": {
       "amount": {
         "value": 360329.63,
@@ -864,6 +1015,7 @@
     "category": "reference",
     "expected_state": "answer",
     "expected_intent": "reference_lookup",
+    "expected_no_period": true,
     "expected_facts": {
       "amount": {
         "value": 348367.51,
@@ -899,6 +1051,7 @@
     "category": "reference",
     "expected_state": "answer",
     "expected_intent": "reference_lookup",
+    "expected_no_period": true,
     "expected_facts": {
       "amount": {
         "value": 4154.44,
@@ -930,6 +1083,7 @@
     "category": "reference",
     "expected_state": "answer",
     "expected_intent": "reference_lookup",
+    "expected_no_period": true,
     "expected_facts": {
       "amount": {
         "value": 2189775.34,
@@ -1037,18 +1191,19 @@
   },
   {
     "id": "P03",
-    "question": "How many transactions were there yesterday?",
+    "question": "How many debit transactions were there yesterday?",
     "category": "multi_turn",
     "expected_state": "answer",
     "expected_intent": "spend_summary",
     "expected_period": "yesterday",
+    "expected_transaction_type": "debit",
     "expected_facts": {
       "count": {
-        "value": 59,
+        "value": 36,
         "tolerance": 0
       },
       "record_count": {
-        "value": 59,
+        "value": 36,
         "tolerance": 0
       }
     },
@@ -1150,118 +1305,436 @@
   },
   {
     "id": "A01",
-    "question": "How many transactions have I made with Swiggy?",
-    "category": "ambiguous",
-    "expected_state": "clarification_required",
-    "expected_clarification_field": "counterparty",
-    "expected_options": [
-      "SWIGGY",
-      "SWIGGY INSTAMART"
-    ],
-    "clarify_with": {
-      "value": "SWIGGY",
-      "field": "counterparty",
-      "expected_state": "answer",
-      "expected_counterparty": "SWIGGY",
-      "expected_facts": {
-        "count": {
-          "value": 1288,
-          "tolerance": 0
-        },
-        "record_count": {
-          "value": 1288,
-          "tolerance": 0
-        }
-      }
-    }
-  },
-  {
-    "id": "A02",
     "question": "How much did I spend with Swiggy last month?",
     "category": "ambiguous",
     "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "counterparty",
+        "value": "SWIGGY INSTAMART",
+        "expect": {
+          "expected_intent": "counterparty_spend",
+          "expected_counterparty": "SWIGGY INSTAMART",
+          "expected_period": "last_month",
+          "expected_transaction_type": "debit",
+          "expected_facts": {
+            "total": {
+              "value": 6061435.07,
+              "tolerance": 0.02
+            },
+            "record_count": {
+              "value": 46,
+              "tolerance": 0
+            }
+          },
+          "expected_state": "answer"
+        }
+      }
+    ],
     "expected_clarification_field": "counterparty",
     "expected_options": [
       "SWIGGY",
       "SWIGGY INSTAMART"
-    ],
-    "clarify_with": {
-      "value": "SWIGGY INSTAMART",
-      "field": "counterparty",
-      "expected_state": "answer",
-      "expected_counterparty": "SWIGGY INSTAMART",
-      "expected_period": "last_month",
-      "expected_facts": {
-        "total": {
-          "value": 6061435.07,
-          "tolerance": 0.02
-        },
-        "record_count": {
-          "value": 46,
-          "tolerance": 0
+    ]
+  },
+  {
+    "id": "A02",
+    "question": "How many transactions have I made with Swiggy?",
+    "category": "ambiguous",
+    "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "counterparty",
+        "value": "SWIGGY",
+        "expect": {
+          "expected_state": "clarification_required",
+          "expected_clarification_field": "date_range",
+          "expected_options": [
+            "last_7_days",
+            "last_30_days",
+            "this_month",
+            "last_month",
+            "last_90_days",
+            "all_time"
+          ]
+        }
+      },
+      {
+        "field": "date_range",
+        "value": "all_time",
+        "expect": {
+          "expected_state": "clarification_required",
+          "expected_clarification_field": "transaction_type",
+          "expected_options": [
+            "debit",
+            "credit",
+            "both"
+          ]
+        }
+      },
+      {
+        "field": "transaction_type",
+        "value": "both",
+        "expect": {
+          "expected_counterparty": "SWIGGY",
+          "expected_period": "all_time",
+          "expected_facts": {
+            "count": {
+              "value": 1288,
+              "tolerance": 0
+            },
+            "record_count": {
+              "value": 1288,
+              "tolerance": 0
+            }
+          },
+          "expected_state": "answer"
         }
       }
-    }
+    ],
+    "expected_clarification_field": "counterparty",
+    "expected_options": [
+      "SWIGGY",
+      "SWIGGY INSTAMART"
+    ]
   },
   {
     "id": "A03",
     "question": "Show me the Swiggy transactions from the last 7 days",
     "category": "ambiguous",
     "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "counterparty",
+        "value": "SWIGGY",
+        "expect": {
+          "expected_state": "clarification_required",
+          "expected_clarification_field": "transaction_type",
+          "expected_options": [
+            "debit",
+            "credit",
+            "both"
+          ]
+        }
+      },
+      {
+        "field": "transaction_type",
+        "value": "both",
+        "expect": {
+          "expected_intent": "transaction_lookup",
+          "expected_counterparty": "SWIGGY",
+          "expected_period": "last_7_days",
+          "expected_facts": {
+            "count": {
+              "value": 16,
+              "tolerance": 0
+            },
+            "record_count": {
+              "value": 16,
+              "tolerance": 0
+            },
+            "total": {
+              "value": 10175021.11,
+              "tolerance": 0.02
+            }
+          },
+          "expected_state": "answer"
+        }
+      }
+    ],
     "expected_clarification_field": "counterparty",
     "expected_options": [
       "SWIGGY",
       "SWIGGY INSTAMART"
-    ],
-    "clarify_with": {
-      "value": "SWIGGY",
-      "field": "counterparty",
-      "expected_state": "answer",
-      "expected_counterparty": "SWIGGY",
-      "expected_period": "last_7_days",
-      "expected_facts": {
-        "count": {
-          "value": 16,
-          "tolerance": 0
-        },
-        "record_count": {
-          "value": 16,
-          "tolerance": 0
-        },
-        "total": {
-          "value": 10175021.11,
-          "tolerance": 0.02
-        }
-      }
-    }
+    ]
   },
   {
     "id": "A04",
     "question": "What did I pay Selection last month?",
     "category": "ambiguous",
     "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "counterparty",
+        "value": "SELECTION MOBILE",
+        "expect": {
+          "expected_counterparty": "SELECTION MOBILE",
+          "expected_period": "last_month",
+          "expected_transaction_type": "debit",
+          "expected_facts": {
+            "total": {
+              "value": 20106720.97,
+              "tolerance": 0.02
+            },
+            "record_count": {
+              "value": 43,
+              "tolerance": 0
+            }
+          },
+          "expected_state": "answer"
+        }
+      }
+    ],
     "expected_clarification_field": "counterparty",
     "expected_options": [
       "SELECTION ELECTRONICS",
       "SELECTION MOBILE"
-    ],
-    "clarify_with": {
-      "value": "SELECTION MOBILE",
-      "field": "counterparty",
-      "expected_state": "answer",
-      "expected_counterparty": "SELECTION MOBILE",
-      "expected_period": "last_month",
-      "expected_facts": {
-        "total": {
-          "value": 20106720.97,
-          "tolerance": 0.02
-        },
-        "record_count": {
-          "value": 43,
-          "tolerance": 0
+    ]
+  },
+  {
+    "id": "A05",
+    "question": "How much did I spend with amazon last month?",
+    "category": "ambiguous",
+    "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "counterparty",
+        "value": "AMAZON PAY INDIA",
+        "expect": {
+          "expected_counterparty": "AMAZON PAY INDIA",
+          "expected_period": "last_month",
+          "expected_transaction_type": "debit",
+          "expected_facts": {
+            "total": {
+              "value": 15850277.31,
+              "tolerance": 0.02
+            },
+            "record_count": {
+              "value": 40,
+              "tolerance": 0
+            }
+          },
+          "expected_state": "answer"
         }
       }
-    }
+    ],
+    "expected_clarification_field": "counterparty",
+    "expected_options": [
+      "AMAZON PAY INDIA",
+      "AMAZON SELLER SERVICES"
+    ]
+  },
+  {
+    "id": "A06",
+    "question": "What did amazon send me in the last 30 days?",
+    "category": "ambiguous",
+    "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "counterparty",
+        "value": "AMAZON SELLER SERVICES",
+        "expect": {
+          "expected_state": "clarification_required",
+          "expected_clarification_field": "transaction_type",
+          "expected_options": [
+            "debit",
+            "credit",
+            "both"
+          ]
+        }
+      },
+      {
+        "field": "transaction_type",
+        "value": "credit",
+        "expect": {
+          "expected_counterparty": "AMAZON SELLER SERVICES",
+          "expected_period": "last_30_days",
+          "expected_transaction_type": "credit",
+          "expected_facts": {
+            "total": {
+              "value": 10923472.28,
+              "tolerance": 0.02
+            },
+            "record_count": {
+              "value": 15,
+              "tolerance": 0
+            }
+          },
+          "expected_state": "answer"
+        }
+      }
+    ],
+    "expected_clarification_field": "counterparty",
+    "expected_options": [
+      "AMAZON PAY INDIA",
+      "AMAZON SELLER SERVICES"
+    ]
+  },
+  {
+    "id": "K01",
+    "question": "What was the total value of my transactions last month?",
+    "category": "no_assumptions",
+    "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "transaction_type",
+        "value": "credit",
+        "expect": {
+          "expected_period": "last_month",
+          "expected_transaction_type": "credit",
+          "expected_facts": {
+            "total": {
+              "value": 316199307.92,
+              "tolerance": 0.02
+            },
+            "record_count": {
+              "value": 750,
+              "tolerance": 0
+            }
+          },
+          "expected_state": "answer"
+        }
+      }
+    ],
+    "expected_clarification_field": "transaction_type",
+    "expected_options": [
+      "debit",
+      "credit",
+      "both"
+    ]
+  },
+  {
+    "id": "K02",
+    "question": "How many transactions were there in the last 90 days?",
+    "category": "no_assumptions",
+    "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "transaction_type",
+        "value": "both",
+        "expect": {
+          "expected_period": "last_90_days",
+          "expected_facts": {
+            "count": {
+              "value": 5869,
+              "tolerance": 0
+            },
+            "record_count": {
+              "value": 5869,
+              "tolerance": 0
+            }
+          },
+          "expected_state": "answer"
+        }
+      }
+    ],
+    "expected_clarification_field": "transaction_type",
+    "expected_options": [
+      "debit",
+      "credit",
+      "both"
+    ]
+  },
+  {
+    "id": "K03",
+    "question": "Who did I pay the most?",
+    "category": "no_assumptions",
+    "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "date_range",
+        "value": "this_month",
+        "expect": {
+          "expected_intent": "top_counterparties",
+          "expected_period": "this_month",
+          "expected_transaction_type": "debit",
+          "expected_grouped": true,
+          "expected_facts": {
+            "top_label": {
+              "value": "VIVO MOBILE INDIA",
+              "tolerance": 0
+            },
+            "group_count": {
+              "value": 10,
+              "tolerance": 0
+            },
+            "record_count": {
+              "value": 406,
+              "tolerance": 0
+            },
+            "shown_total": {
+              "value": 203616846.68,
+              "tolerance": 0.02
+            },
+            "top_value": {
+              "value": 26172465.45,
+              "tolerance": 0.02
+            }
+          },
+          "expected_state": "answer"
+        }
+      }
+    ],
+    "expected_clarification_field": "date_range",
+    "expected_options": [
+      "last_7_days",
+      "last_30_days",
+      "this_month",
+      "last_month",
+      "last_90_days",
+      "all_time"
+    ]
+  },
+  {
+    "id": "K04",
+    "question": "How much did I spend on UPI?",
+    "category": "no_assumptions",
+    "expected_state": "clarification_required",
+    "resolutions": [
+      {
+        "field": "date_range",
+        "value": "last_30_days",
+        "expect": {
+          "expected_period": "last_30_days",
+          "expected_channel": "UPI",
+          "expected_transaction_type": "debit",
+          "expected_facts": {
+            "total": {
+              "value": 88332973.6,
+              "tolerance": 0.02
+            },
+            "record_count": {
+              "value": 258,
+              "tolerance": 0
+            }
+          },
+          "expected_state": "answer"
+        }
+      }
+    ],
+    "expected_clarification_field": "date_range",
+    "expected_options": [
+      "last_7_days",
+      "last_30_days",
+      "this_month",
+      "last_month",
+      "last_90_days",
+      "all_time"
+    ]
+  },
+  {
+    "id": "K05",
+    "question": "What is the balance of the account ending 0000?",
+    "category": "no_assumptions",
+    "expected_state": "data_unavailable",
+    "expected_clarification_field": "account",
+    "must_not_contain": [
+      "74484199624186",
+      "22938740161276",
+      "36360834647843"
+    ]
+  },
+  {
+    "id": "K06",
+    "question": "Show me the transactions on the account ending 0000",
+    "category": "no_assumptions",
+    "expected_state": "data_unavailable",
+    "expected_clarification_field": "account",
+    "must_not_contain": [
+      "74484199624186",
+      "22938740161276",
+      "36360834647843"
+    ]
   },
   {
     "id": "D01",

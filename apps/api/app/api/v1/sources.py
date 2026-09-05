@@ -11,6 +11,7 @@ returned: `validate` hands back an opaque token that `initialize` redeems.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import secrets
 from typing import Any
@@ -19,9 +20,15 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ...services import mysql_source as ms
+from ...services.active_db import active_db, is_bundled, set_active_db
 from ...services.ingest import IngestError, Ingestor
 from ...services.source_mapping import build_mapping
-from ...state import app_state, rebuild_dataset_context
+from ...state import (
+    app_state,
+    clear_active_source,
+    rebuild_dataset_context,
+    save_active_source,
+)
 
 log = logging.getLogger("tbx.sources")
 
@@ -129,13 +136,29 @@ async def initialize(req: InitializeRequest) -> dict[str, Any]:
     ingestor = Ingestor(target, mapping)
 
     def _done(progress) -> None:
-        """Runs after the last insert; `ready` is set only once this returns cleanly."""
+        """Point the assistant at the freshly ingested database.
+
+        Called by the runner while the state is still `loaded` -- the gap between the
+        last insert and `ready`. Promotion to `ready` happens only if this returns
+        cleanly, so a client that polls until `ready` can never see the old dataset.
+        The switch is rolled back if the new tables cannot be read: a half-loaded
+        source must never become the thing the chatbot answers from.
+        """
+        if progress.state != "loaded":
+            return
+        previous = active_db()
         try:
+            set_active_db(ingestor.db)
             rebuild_dataset_context()
             app_state.source = target
+            save_active_source(target, ingestor.db)
             app_state.pending_sources.pop(req.token, None)
-            log.info("data source switched to %s (%s)", target.label, progress.dataset_version)
+            log.info("data source switched to %s in %s (%s)",
+                     target.label, ingestor.db, progress.dataset_version)
         except Exception as e:  # noqa: BLE001
+            set_active_db(previous)
+            with contextlib.suppress(Exception):
+                rebuild_dataset_context()
             progress.state = "failed"
             progress.error = f"loaded, but the assistant could not read it back: {e}"
 
@@ -153,6 +176,8 @@ async def status() -> dict[str, Any]:
     return {
         "progress": app_state.ingest.progress.public(),
         "active_source": app_state.source.public() if app_state.source else None,
+        "active_database": active_db(),
+        "bundled": is_bundled(),
         "dataset": {
             "dataset_version": ctx.dataset_version,
             "min_date": ctx.calendar.min_date.isoformat(),
@@ -163,3 +188,21 @@ async def status() -> dict[str, Any]:
         } if ctx else None,
         "chat_ready": app_state.ready,
     }
+
+
+@router.post("/reset")
+async def reset() -> dict[str, Any]:
+    """Hand the chatbot back to the bundled dataset.
+
+    The ingested database is left in place, so the same endpoint can be made active
+    again by initialising it once more.
+    """
+    if app_state.ingest.busy:
+        raise HTTPException(409, "an initialisation is running; wait for it to finish")
+    clear_active_source()
+    try:
+        rebuild_dataset_context()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"could not read the bundled dataset back: {e}") from None
+    log.info("data source reset to the bundled dataset (%s)", active_db())
+    return {"reset": True, "active_database": active_db()}

@@ -18,8 +18,15 @@ for (const c of ['Sparkline', 'TimingBar', 'BarSeries']) if (!obs.includes(c)) f
 // The session sections render only once a run exists, so make one first; any outcome counts.
 await fetch(`${ORIGIN}/api/v1/chat`, { method: 'POST', headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ message: 'what is my name?' }) }).catch(() => {});
+
+// The home page now waits for an entity before it mounts the panes, so the run pane is not
+// in the first server render; assert its structure in the source and the gate in the HTML.
 const home = await (await fetch(`${ORIGIN}/`)).text();
-for (const t of ['Run details', 'Nothing running']) if (!home.includes(t)) fail('G20', `run pane structure missing: ${t}`);
+if (!/Loading entities|Select your entity ID|Run details/.test(home))
+  fail('G20', 'home page renders neither the entity gate nor the run pane');
+const bench = fs.readFileSync(path.join(ROOT, 'apps/web/components/Workbench.tsx'), 'utf8');
+if (!bench.includes('Run details')) fail('G20', 'run pane structure missing: Run details');
+if (!run.includes('Nothing running')) fail('G20', 'run pane structure missing: Nothing running');
 const page = await (await fetch(`${ORIGIN}/observability`)).text();
 for (const t of ['Where the time goes', 'Model mix', 'Accuracy by question category', 'Recent runs'])
   if (!page.includes(t)) fail('G20', `observability structure missing: ${t}`);

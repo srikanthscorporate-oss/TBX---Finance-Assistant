@@ -54,7 +54,12 @@ Intents:
 - top_counterparties: who was paid the most / most often
 - channel_breakdown: split by UPI / NEFT / IMPS etc.
 - account_summary: per-account totals
-- balance: available balance of accounts
+- account_list: WHICH accounts or banks the user has, as a list. Use this for "what are my
+  bank accounts", "which banks are my accounts in", "list my accounts", "list bank names".
+  It is a lookup, not a calculation: never answer these with a sum, a total or a
+  "dominant"/"top" group.
+- balance: how much is in the accounts ("what is my balance", "balance of the account
+  ending 1234"). Only when the user asks about an amount.
 - trend: a figure over time (group_by a time grain)
 - period_comparison: two periods compared (compare_to required)
 
@@ -67,7 +72,9 @@ Rules:
 - Copy the counterparty name as the user wrote it into `counterparty_name`. Do NOT
   correct the spelling or expand it; a separate resolver handles that.
 - "spent", "paid", "sent" mean transaction_type debit; "received", "credited", "got" mean credit.
-  If the user does not say, leave transaction_type null.
+  If the user does not say which side they mean, leave transaction_type null: the server
+  asks them. Never guess a side, and never guess a period: if the user names no period,
+  leave date_range null rather than choosing one.
 - Amounts: "less than 500", "under 500", "below 500" -> max_amount 500; "more than", "over",
   "above" -> min_amount; "between 100 and 500" -> both. Rupees is the only currency.
 - A bare "reference number" or "ref no" is reference_kind "reference". Use "utr" ONLY when the
@@ -79,6 +86,11 @@ Rules:
 - `intent` must be `period_comparison` only when the user compares two periods,
   and then `compare_to` is required.
 - Never invent a filter the user did not ask for.
+- A question that asks WHICH or WHAT things exist (accounts, banks) is a list, not an
+  aggregate: use account_list and never group_by with a sum. But a question about an
+  AMOUNT that merely mentions "my accounts" ("how much was credited to my accounts last
+  month") is still a money question, not account_list.
+- Bank names come from the account's bank, never from a counterparty name in a narration.
 - Output JSON only. No prose, no code fences, no explanation.
 
 ## User

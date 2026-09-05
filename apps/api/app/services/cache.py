@@ -50,7 +50,9 @@ class Cache:
             log.debug("cache get failed: %s", e)
             return None
 
-    def set_json(self, *parts: str, value: Any, ttl: int) -> None:
+    def set_json(self, *parts: str, value: Any, ttl: int | None) -> None:
+        """`ttl=None` stores the value without an expiry, for state that must survive
+        a restart rather than age out (the active data source pointer)."""
         if not self._r:
             return
         try:

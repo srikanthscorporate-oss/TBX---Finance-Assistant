@@ -14,6 +14,7 @@ class Intent(str, Enum):
     TOP_COUNTERPARTIES = "top_counterparties"
     CHANNEL_BREAKDOWN = "channel_breakdown"
     BALANCE = "balance"
+    ACCOUNT_LIST = "account_list"
     PERIOD_COMPARISON = "period_comparison"
     TREND = "trend"
     ANOMALY_SCAN = "anomaly_scan"
