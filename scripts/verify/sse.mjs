@@ -1,10 +1,12 @@
 // G4: the SSE endpoint streams ordered agent events and terminates cleanly.
-import { API, pass, fail } from './_lib.mjs';
+import { API, fetchRetry, pass, fail } from './_lib.mjs';
 
-const res = await fetch(`${API}/api/v1/chat/stream`, {
+// A fresh amount bound each run so the judge's answer cache cannot short-circuit the query stage.
+const nonce = 100000 + (Date.now() % 900000);
+const res = await fetchRetry(`${API}/api/v1/chat/stream`, {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ message: 'How much did we spend with Acme Technologies last month?' }),
+  body: JSON.stringify({ message: `How much did I spend with AIRTEL last month, under ${nonce} rupees?` }),
 });
 if (!res.ok) fail('G4', `stream returned ${res.status}`);
 if (!(res.headers.get('content-type') || '').includes('text/event-stream'))
@@ -17,9 +19,9 @@ const events = [...text.matchAll(/^event: (\S+)\ndata: (.*)$/gm)]
 if (events.length < 5) fail('G4', `only ${events.length} events streamed`);
 
 const types = events.map(e => e.type);
-for (const required of ['run_started', 'intent_detected', 'query_executed',
+for (const required of ['run_started', 'intent_detected', 'entity_resolved', 'query_executed',
                         'verification_completed', 'run_completed'])
-  if (!types.includes(required)) fail('G4', `missing event: ${required}`);
+  if (!types.includes(required)) fail('G4', `missing event: ${required} in ${types.join(' -> ')}`);
 
 if (types[0] !== 'run_started') fail('G4', `first event was ${types[0]}`);
 if (types.at(-1) !== 'final') fail('G4', `last event was ${types.at(-1)}, expected final`);
@@ -31,10 +33,16 @@ for (let i = 1; i < seqs.length; i++)
 if (types.indexOf('verification_completed') > types.indexOf('answer_generated'))
   fail('G4', 'answer generated before verification completed');
 
+const ent = events.find(e => e.type === 'entity_resolved');
+if (!ent.data.detail || !('counterparty' in ent.data.detail || 'account' in ent.data.detail))
+  fail('G4', `entity_resolved detail carries neither counterparty nor account: ${JSON.stringify(ent.data.detail)}`);
+
 const final = events.at(-1).data;
-if (final.state !== 'answer' || !final.evidence) fail('G4', 'final payload incomplete');
+if (final.state !== 'answer' || !final.evidence) fail('G4', `final payload incomplete (${final.state}: ${final.message || ''})`);
+if (/\d{10,}/.test(JSON.stringify(final.evidence.entities_resolved))) fail('G4', 'entities_resolved carries a long number');
 
 if (/chain of thought|reasoning:|let me think/i.test(text))
   fail('G4', 'stream appears to expose model reasoning');
 
-pass('G4', `${events.length} events`, `order: ${types.join(' -> ')}`);
+pass('G4', `${events.length} events`, `order: ${types.join(' -> ')}`,
+     `entity_resolved: ${JSON.stringify(ent.data.detail)}`);

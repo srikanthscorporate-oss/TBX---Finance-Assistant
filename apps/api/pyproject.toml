@@ -12,6 +12,8 @@ dependencies = [
     "langfuse>=2.57",
     "redis>=5.2",
     "openpyxl>=3.1",
+    "cryptography>=43",
+    "pymysql>=1.1",
 ]
 
 [dependency-groups]

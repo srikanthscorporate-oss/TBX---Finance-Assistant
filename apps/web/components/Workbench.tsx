@@ -2,19 +2,38 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUp, CircleNotch, Sparkle } from '@phosphor-icons/react';
-import { getDataset, streamChat } from '@/lib/api';
-import type { AgentEvent, DatasetInfo, Turn } from '@/lib/types';
+import { getDataset, getEntities, streamChat } from '@/lib/api';
+import type { AgentEvent, ClarificationOption, DatasetInfo, EntityInfo, Turn } from '@/lib/types';
 import { stageOf } from '@/lib/stages';
 import ModelPicker, { AUTO } from './ModelPicker';
 import RunPane from './RunPane';
 import { Skeleton } from './ui';
 
 const STARTERS = [
-  'How much did we spend with Acme Technologies last month?',
-  'Which transactions are still unreconciled?',
-  'Show me the top vendors last month',
-  'What is our reconciliation rate for the last 6 months?',
+  'How much did I spend last month?',
+  'List transactions under 500 rupees',
+  'How many transactions have I made with Swiggy?',
+  'What is my account balance?',
 ];
+
+interface Ask { question: string; resolvedValue?: string; resolvedField?: string }
+
+/** Turns a clicked option into the next request. A pending clarification is answered by
+ *  value on the same conversation; a suggestion after data_unavailable/out_of_scope is a
+ *  fresh question, and a counterparty suggestion re-asks the original question with it. */
+function optionRequest(turn: Turn, o: ClarificationOption): Ask {
+  const res = turn.response!;
+  const field = res.clarification?.field ?? undefined;
+  if (res.state === 'clarification_required') {
+    return { question: `${turn.question}  (${o.label})`, resolvedValue: o.value, resolvedField: field };
+  }
+  if (field === 'counterparty') return { question: `${turn.question} with ${o.label}` };
+  return { question: o.label };
+}
+
+function shortEntity(id: string): string {
+  return id.length > 13 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
+}
 
 export default function Workbench() {
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -24,20 +43,35 @@ export default function Workbench() {
   const [model, setModel] = useState<string>(AUTO);
   const [dataset, setDataset] = useState<DatasetInfo | null>(null);
   const [datasetError, setDatasetError] = useState<string | null>(null);
+  const [entities, setEntities] = useState<EntityInfo[]>([]);
+  const [entityId, setEntityId] = useState<string | null>(null);
   const conversationId = useRef<string | null>(null);
   const feedEnd = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getDataset().then(setDataset).catch(e => setDatasetError(String(e?.message ?? e)));
+    getEntities().then(list => {
+      setEntities(list);
+      setEntityId(prev => prev ?? (list.find(e => e.default) ?? list[0])?.entity_id ?? null);
+    }).catch(() => setEntities([]));
   }, []);
+
+  // Changing the entity starts a fresh conversation so no parked plan crosses scopes.
+  const changeEntity = (id: string) => {
+    if (id === entityId) return;
+    setEntityId(id);
+    conversationId.current = null;
+    setTurns([]);
+    setSelectedId(null);
+  };
 
   useEffect(() => {
     feedEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [turns.length]);
 
-  const ask = useCallback(async (question: string, resolvedVendorId?: string) => {
+  const ask = useCallback(async (question: string, resolvedValue?: string, resolvedField?: string) => {
     const q = question.trim();
-    if ((!q && !resolvedVendorId) || busy) return;
+    if ((!q && !resolvedValue) || busy) return;
     setBusy(true);
     setInput('');
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -62,7 +96,9 @@ export default function Workbench() {
     const onEvent = (e: AgentEvent) => { queue.push(e); void drain(); };
 
     try {
-      const res = await streamChat(q, conversationId.current, onEvent, model, resolvedVendorId);
+      const res = await streamChat(resolvedValue ? '' : q, conversationId.current, onEvent, {
+        model, resolvedValue, resolvedField, entityId,
+      });
       while (queue.length || draining) await new Promise(r => setTimeout(r, 40));
       conversationId.current = res.conversation_id;
       setTurns(t => t.map(x => (x.id === id ? { ...x, response: res, running: false } : x)));
@@ -72,7 +108,7 @@ export default function Workbench() {
     } finally {
       setBusy(false);
     }
-  }, [busy, model]);
+  }, [busy, model, entityId]);
 
   const active = useMemo(
     () => turns.find(t => t.id === selectedId) ?? turns[turns.length - 1] ?? null,
@@ -86,6 +122,22 @@ export default function Workbench() {
 
       <section aria-label="Conversation"
         className="flex min-h-0 flex-col border-b border-line lg:border-b-0 lg:border-r">
+        {entities.length > 0 && (
+          <div className="flex items-center gap-2 border-b border-line px-4 py-2">
+            <label htmlFor="entity" className="text-[11px] uppercase tracking-wide text-muted">Entity</label>
+            <select id="entity" value={entityId ?? ''} disabled={busy}
+              onChange={e => changeEntity(e.target.value)}
+              className="num rounded-sm border border-line bg-surface px-2 py-1 font-mono text-[11.5px]
+                         text-ink-2 outline-none focus:border-accent disabled:opacity-60">
+              {entities.map(e => (
+                <option key={e.entity_id} value={e.entity_id}>
+                  {shortEntity(e.entity_id)} · {e.accounts} account{e.accounts === 1 ? '' : 's'}{e.default ? ' · default' : ''}
+                </option>
+              ))}
+            </select>
+            <span className="ml-auto text-[11px] text-muted">Changing the entity starts a new conversation</span>
+          </div>
+        )}
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
           {datasetError && (
             <p className="mb-4 rounded border border-critical/40 bg-critical/[.07] px-3 py-2.5
@@ -98,7 +150,7 @@ export default function Workbench() {
             <div className="space-y-4">
               <div className="space-y-2">
                 <h1 className="text-[18px] font-semibold leading-tight tracking-tight">
-                  Ask about spend, payouts and reconciliation.
+                  Ask about your transactions, counterparties and balances.
                 </h1>
                 <p className="text-[12.5px] leading-6 text-ink-2">
                   Every figure is computed by a database query and verified before you
@@ -107,7 +159,7 @@ export default function Workbench() {
                 </p>
                 {dataset ? (
                   <p className="num font-mono text-[11px] text-muted">
-                    {dataset.vendor_count} vendors · data ends {dataset.max_date}
+                    {dataset.account_count} accounts · {dataset.counterparty_count} counterparties · data ends {dataset.max_date}
                   </p>
                 ) : <Skeleton className="h-3.5 w-52" />}
               </div>
@@ -163,36 +215,59 @@ export default function Workbench() {
                     )}
                   </button>
 
-                  {turn.response?.clarification?.options?.length ? (
-                    <div className={`mt-2 rounded border px-3 py-2.5 ${
-                      turn.response.clarification.field === 'guided' ? 'border-line bg-raised' : 'border-warning/40 bg-warning/[.06]'}`}>
-                      <p className="text-[11px] font-medium uppercase tracking-wide text-muted">
-                        {turn.response.clarification.field === 'vendor_name' && turn.response.state === 'clarification_required'
-                          ? 'Which one did you mean?' : turn.response.clarification.question}
-                      </p>
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {turn.response.clarification.options.map(o => (
-                          <button key={o.value} disabled={busy}
-                            onClick={() => turn.response!.state === 'clarification_required'
-                              ? ask(`${turn.question}  (${o.label})`, o.value)
-                              : ask(o.value.startsWith('V') && turn.response!.clarification!.field === 'vendor_name'
-                                  ? o.label : (turn.response!.clarification!.field === 'vendor_name'
-                                      ? turn.question.replace(/with .+?( last| this| in |$)/, `with ${o.label}$1`) : o.value))}
-                            className="rounded-sm border border-line bg-surface px-2.5 py-1.5 text-[12px]
-                                       transition-colors hover:border-accent active:scale-[.98]
-                                       disabled:opacity-50">
-                            {o.label}
-                            {o.hint && <span className="ml-1.5 text-muted">{o.hint}</span>}
-                          </button>
-                        ))}
-                      </div>
-                      {turn.response.state === 'clarification_required' && (
-                        <p className="mt-2 text-[11px] leading-4 text-muted">
-                          The question is kept as you wrote it; only the vendor is filled in.
+                  {turn.response?.clarification?.options?.length ? (() => {
+                    const clar = turn.response!.clarification!;
+                    const pending = turn.response!.state === 'clarification_required';
+                    const guided = clar.field === 'guided' || !pending;
+                    return (
+                      <div className={`mt-2 rounded border px-3 py-2.5 ${
+                        guided ? 'border-line bg-raised' : 'border-warning/40 bg-warning/[.06]'}`}>
+                        <p className="text-[11px] font-medium uppercase tracking-wide text-muted">
+                          {clar.question}
                         </p>
-                      )}
-                    </div>
-                  ) : null}
+                        {pending ? (
+                          <ul role="listbox" aria-label={clar.question}
+                              className="mt-2 divide-y divide-line-soft overflow-hidden rounded-sm border border-line bg-surface">
+                            {clar.options.map(o => (
+                              <li key={o.value} role="option" aria-selected={false}>
+                                <button disabled={busy}
+                                  onClick={() => { const r = optionRequest(turn, o); ask(r.question, r.resolvedValue, r.resolvedField); }}
+                                  className="flex w-full items-baseline gap-3 px-2.5 py-1.5 text-left text-[12px]
+                                             transition-colors hover:bg-accent-soft/40 disabled:opacity-50">
+                                  <span className="text-ink">{o.label}</span>
+                                  {o.hint && <span className="ml-auto text-[11px] text-muted">{o.hint}</span>}
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {clar.options.map(o => (
+                              <button key={o.value} disabled={busy}
+                                onClick={() => { const r = optionRequest(turn, o); ask(r.question, r.resolvedValue, r.resolvedField); }}
+                                className="rounded-sm border border-line bg-surface px-2.5 py-1.5 text-[12px]
+                                           transition-colors hover:border-accent active:scale-[.98]
+                                           disabled:opacity-50">
+                                {o.label}
+                                {o.hint && <span className="ml-1.5 text-muted">{o.hint}</span>}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {pending && (
+                          <p className="mt-2 text-[11px] leading-4 text-muted">
+                            {clar.field === 'date_range'
+                              ? 'The question is kept as you wrote it; only the period is filled in.'
+                              : clar.field === 'account'
+                                ? 'The question is kept as you wrote it; only the account is filled in.'
+                                : clar.field === 'counterparty'
+                                  ? 'The question is kept as you wrote it; only the counterparty is filled in.'
+                                  : 'Pick one to continue.'}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })() : null}
 
                   {turn.response?.follow_up_suggestions?.length ? (
                     <div className="mt-1.5 flex flex-wrap gap-1.5">
@@ -225,7 +300,7 @@ export default function Workbench() {
               onKeyDown={e => {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(input); }
               }}
-              placeholder="Ask about spend, payouts or reconciliation. Shift+Enter for a new line."
+              placeholder="Ask about transactions, counterparties, accounts or balance. Shift+Enter for a new line."
               className="min-h-[64px] flex-1 resize-none rounded border border-line bg-surface px-3 py-2.5
                          text-[13px] leading-5 text-ink outline-none transition-colors
                          placeholder:text-muted focus:border-accent disabled:opacity-60" />

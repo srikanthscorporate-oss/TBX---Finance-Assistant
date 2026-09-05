@@ -24,6 +24,10 @@ class Settings:
     ch_db: str = field(default_factory=lambda: os.getenv("CH_DB", "tbx_finance"))
     ch_user: str = field(default_factory=lambda: os.getenv("CH_AGENT_USER", "tbx_agent"))
     ch_password: str = field(default_factory=lambda: os.getenv("CH_AGENT_PASSWORD", ""))
+    # Writes only: ingesting a user-supplied MySQL source (services/ingest.py).
+    ch_admin_user: str = field(default_factory=lambda: os.getenv("CH_ADMIN_USER", "tbx_admin"))
+    ch_admin_password: str = field(
+        default_factory=lambda: os.getenv("CH_ADMIN_PASSWORD", ""))
 
     redis_url: str = field(default_factory=lambda: os.getenv("REDIS_URL", "redis://redis:6379/0"))
 

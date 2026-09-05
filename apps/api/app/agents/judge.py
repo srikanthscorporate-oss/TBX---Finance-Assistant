@@ -14,8 +14,8 @@ from ..services.cache import Cache
 
 PLAN_TTL = 24 * 3600
 ANSWER_TTL = 3600
-CACHE_NS = "v3"
-"""Bump when cache semantics change. v2 stopped caching refusals."""
+CACHE_NS = "v4"
+"""Bump when cache semantics change. v2 stopped caching refusals; v4 is the bank schema."""
 WINDOW_TTL = 3600
 """Rolling window, in seconds, for per-model validity counters."""
 MIN_SAMPLE = 6
@@ -59,11 +59,11 @@ class Dispatch:
                 "model": (self.model or "").split("/")[-1] or None, "reasons": self.reasons}
 
 
-TEMPLATE_INTENTS = {"total_spend", "vendor_spend", "category_spend", "account_spend",
-                    "vendor_payouts", "unreconciled", "reconciliation_rate",
-                    "transaction_lookup", "vendor_lookup", "payout_status"}
+TEMPLATE_INTENTS = {"spend_summary", "counterparty_spend", "account_summary",
+                    "transaction_lookup", "reference_lookup", "balance",
+                    "largest_transactions"}
 """Intents whose single-figure answers are rendered by a template instead of a model."""
-ANOMALY_INTENTS = {"vendor_spend", "vendor_payouts"}
+ANOMALY_INTENTS = {"counterparty_spend"}
 
 
 @dataclass
@@ -173,9 +173,9 @@ class Judge:
             reasons.append("single verified figure; templated sentence, no model call")
         else:
             composer = "llm"
-        anomaly = intent in ANOMALY_INTENTS and plan.vendor_id is not None and plan.date_range is not None
+        anomaly = intent in ANOMALY_INTENTS and plan.counterparty is not None and plan.date_range is not None
         if anomaly:
-            reasons.append("vendor with a period; anomaly check spawned")
+            reasons.append("counterparty with a period; anomaly check spawned")
         return Dispatch(planner=d.planner, composer=composer, anomaly=anomaly, model=d.model, reasons=reasons)
 
     def score(self, response) -> Verdict:

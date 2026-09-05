@@ -13,17 +13,23 @@ from . import prompts
 from .context import RunContext
 
 FACT_DESCRIPTIONS = {
-    "shown_total": ("the combined value of ONLY the groups listed in the table "
+    "shown_total": ("the combined value of ONLY the rows listed in the table "
                     "below, which was cut off by a row limit. Describe it as the "
-                    "top groups shown, never as a total"),
+                    "rows shown, never as a total"),
+    "shown_count": "how many rows are listed below (fewer than the full match count)",
     "total": "the total value",
-    "count": "the number of matching records",
-    "rate": "the percentage",
-    "record_count": "how many records the figure is based on",
+    "count": "the number of matching transactions",
+    "record_count": "how many transactions the figure is based on",
     "top_value": "the largest single group's value",
+    "top_label": "the name of the largest group",
     "group_count": "how many groups are shown",
-    "matched": "how many records reconciled",
-    "unmatched": "how many records did not reconcile",
+    "balance_total": "sum of available balances",
+    "amount": "the amount of the single matching transaction",
+    "txn_date": "the date and time of the single matching transaction",
+    "counterparty": "who the single matching transaction was with",
+    "channel": "the payment rail of the single matching transaction",
+    "account": "the masked account of the single matching transaction",
+    "txn_type": "whether the single matching transaction was a debit or a credit",
 }
 
 

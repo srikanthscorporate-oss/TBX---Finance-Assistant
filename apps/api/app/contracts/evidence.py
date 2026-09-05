@@ -20,7 +20,7 @@ class SourceRecordRef(BaseModel):
     table: str
     record_id: str
     txn_date: date | None = None
-    vendor_id: str | None = None
+    counterparty: str | None = None
     amount: float | None = None
 
 
@@ -111,6 +111,8 @@ class EvidencePackage(BaseModel):
     breakdown: list[BreakdownRow] = Field(default_factory=list)
     breakdown_columns: list[str] = Field(default_factory=list)
     sample_records: list[SourceRecordRef] = Field(default_factory=list)
+    records: list[dict[str, Any]] = Field(default_factory=list)
+    record_columns: list[str] = Field(default_factory=list)
 
     total_record_count: int = 0
     resolved_period: str | None = None

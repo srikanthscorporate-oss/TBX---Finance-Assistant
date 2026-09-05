@@ -197,7 +197,7 @@ export default function Observability({ initialUsage, initialEvals, initialJudge
                   {[['Verification pass rate', 'verification_pass_rate', 'blocking checks veto an answer'],
                     ['Hallucination free', 'hallucination_free_rate', 'no unverified figures'],
                     ['Numeric accuracy', 'numeric_accuracy', 'against independent computation'],
-                    ['Vendor resolution', 'vendor_resolution_accuracy', 'correct entity chosen']].map(([label, key, hint]) => {
+                    ['Counterparty resolution', 'counterparty_resolution_accuracy', 'correct counterparty chosen']].map(([label, key, hint]) => {
                     const v = clean ? ((clean as unknown) as Record<string, number>)[key as string] : null;
                     return (
                       <li key={label as string} className="flex items-center gap-3 px-3.5 py-2.5">

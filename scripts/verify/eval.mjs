@@ -12,7 +12,7 @@ const turns = golden.length + golden.reduce((a, q) => a + (q.follow_ups?.length 
 if (golden.length < 50) fail('G5', `only ${golden.length} golden questions (need >=50)`);
 
 const cats = new Set(golden.map(q => q.category));
-for (const required of ['exact', 'vendor', 'date', 'grouping', 'reconciliation',
+for (const required of ['spend', 'counterparty', 'reference', 'balance', 'amount_filter',
                         'multi_turn', 'ambiguous', 'unsupported', 'missing_data',
                         'adversarial'])
   if (!cats.has(required)) fail('G5', `golden set missing category: ${required}`);

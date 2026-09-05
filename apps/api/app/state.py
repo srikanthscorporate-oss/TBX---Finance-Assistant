@@ -1,7 +1,6 @@
 """Process-wide singletons, built once at startup."""
 from __future__ import annotations
 
-import csv
 import logging
 import os
 from dataclasses import dataclass, field
@@ -17,7 +16,10 @@ from .config.settings import settings
 from .db.clickhouse import ClickHouseClient
 from .llm.router import ModelRouter
 from .services.dates import DatasetCalendar
-from .services.resolver import VendorRecord
+from .services.ingest import IngestRunner
+from .services.mysql_source import MySQLTarget
+from .services.resolver import AccountRecord, CounterpartyRecord
+from .services.source_mapping import SourceMapping
 
 log = logging.getLogger("tbx.state")
 
@@ -34,6 +36,12 @@ class AppState:
     cache: Cache | None = None
     judge: Judge | None = None
     conversations: dict[str, ConversationState] = field(default_factory=dict)
+    ingest: IngestRunner = field(default_factory=IngestRunner)
+    source: MySQLTarget | None = None
+    """The user-supplied MySQL endpoint currently backing the dataset, if any."""
+    pending_sources: dict[str, tuple[MySQLTarget, SourceMapping]] = field(default_factory=dict)
+    """Validated-but-not-yet-initialised connections, keyed by the token handed to
+    the Data Source page. In memory only; credentials are never persisted."""
     usage_log: list[dict] = field(default_factory=list)
     max_usage_log: int = 2000
     _lock: Lock = field(default_factory=Lock)
@@ -84,6 +92,8 @@ class AppState:
                 st.turns = int(doc.get("turns", 0))
                 st.last_period_label = doc.get("last_period_label")
                 st.pending_question = doc.get("pending_question")
+                st.pending_field = doc.get("pending_field")
+                st.entity_id = doc.get("entity_id")
                 for field in ("last_plan", "pending_plan"):
                     if doc.get(field):
                         try:
@@ -99,6 +109,8 @@ class AppState:
         self.cache.set_json("conv", st.conversation_id, value={
             "turns": st.turns, "last_period_label": st.last_period_label,
             "pending_question": st.pending_question,
+            "pending_field": st.pending_field,
+            "entity_id": st.entity_id,
             "last_plan": st.last_plan.model_dump(mode="json") if st.last_plan else None,
             "pending_plan": st.pending_plan.model_dump(mode="json") if st.pending_plan else None,
         }, ttl=CONVERSATION_TTL)
@@ -107,42 +119,70 @@ class AppState:
 app_state = AppState()
 
 
+MAX_COUNTERPARTIES = int(os.getenv("TBX_MAX_COUNTERPARTIES", "5000"))
+"""Distinct counterparties kept in memory for resolution, most active first."""
+
+
 def build_dataset_context(ch: ClickHouseClient) -> DatasetContext:
-    """Read bounds, vendors, categories and currency from ClickHouse so date
-    resolution follows the loaded data."""
+    """Read bounds, counterparties, accounts, banks and entities from ClickHouse so date
+    resolution and name matching follow the loaded data."""
     bounds = ch.query(
         "SELECT min(txn_date) AS lo, max(txn_date) AS hi, count() AS n "
-        "FROM tbx_finance.transactions").rows[0]
+        "FROM tbx_finance.transaction").rows[0]
     if not bounds or int(bounds.get("n", 0)) == 0:
         raise RuntimeError("no transactions loaded; run scripts/load_dataset.py first")
 
-    vendors = [
-        VendorRecord(r["vendor_id"], r["vendor_name"], r.get("legal_name", ""),
-                     r.get("category", ""), r.get("status", "active"))
+    banks = {r["bank_code"]: r["bank_name"] for r in
+             ch.query("SELECT bank_code, bank_name FROM tbx_finance.bank FINAL").rows}
+    accounts = [
+        AccountRecord(r["account_id"], r["entity_id"], r["account_last4"], r["bank_code"],
+                      banks.get(r["bank_code"], r["bank_code"]), int(r["program_id"]),
+                      float(r["available_balance"]))
         for r in ch.query(
-            "SELECT vendor_id, vendor_name, legal_name, category, status "
-            "FROM tbx_finance.vendors").rows
+            "SELECT account_id, entity_id, account_last4, bank_code, program_id, "
+            "available_balance FROM tbx_finance.account FINAL").rows
     ]
-    categories = [r["category"] for r in ch.query(
-        "SELECT DISTINCT category FROM tbx_finance.transactions ORDER BY category").rows]
-    currency_rows = ch.query(
-        "SELECT currency, count() AS n FROM tbx_finance.transactions "
-        "GROUP BY currency ORDER BY n DESC LIMIT 1").rows
-    currency = currency_rows[0]["currency"] if currency_rows else "USD"
-
+    counterparties = [
+        CounterpartyRecord(r["counterparty"], int(r["n"]), r["channel"],
+                           frozenset(r["entities"]))
+        for r in ch.query(
+            "SELECT counterparty, count() AS n, topK(1)(channel)[1] AS channel, "
+            "groupUniqArray(entity_id) AS entities FROM tbx_finance.transaction "
+            "WHERE counterparty != '' GROUP BY counterparty ORDER BY n DESC "
+            "LIMIT {lim:UInt32}", {"lim": MAX_COUNTERPARTIES}).rows
+    ]
+    entity_rows = ch.query(
+        "SELECT entity_id, count() AS n FROM tbx_finance.transaction "
+        "GROUP BY entity_id ORDER BY n DESC").rows
+    entities = [r["entity_id"] for r in entity_rows]
+    default_entity = os.getenv("TBX_DEFAULT_ENTITY") or (entities[0] if entities else None)
     version_rows = ch.query(
         "SELECT dataset_version FROM tbx_finance.dataset_versions "
         "ORDER BY loaded_at DESC LIMIT 1").rows
     version = version_rows[0]["dataset_version"] if version_rows else settings.dataset_version
-
-    log.info("dataset %s: %s..%s, %s transactions, %d vendors, currency=%s",
-             version, bounds["lo"], bounds["hi"], bounds["n"], len(vendors), currency)
-
+    log.info("dataset %s: %s..%s, %s transactions, %d accounts, %d counterparties, %d entities",
+             version, bounds["lo"], bounds["hi"], bounds["n"], len(accounts),
+             len(counterparties), len(entities))
     return DatasetContext(
         calendar=DatasetCalendar(min_date=date.fromisoformat(str(bounds["lo"])),
                                  max_date=date.fromisoformat(str(bounds["hi"]))),
-        vendors=vendors, categories=categories, currency=currency,
-        dataset_version=version)
+        counterparties=counterparties, accounts=accounts, banks=banks, entities=entities,
+        currency="INR", dataset_version=version, default_entity=default_entity)
+
+
+def rebuild_dataset_context() -> None:
+    """Re-read the dataset facts after an ingest replaces the tables.
+
+    The judge is rebuilt with the new dataset version so cached plans and answers
+    from the previous dataset can never be served against the new one.
+    """
+    assert app_state.ch is not None, "app state not initialised"
+    app_state.ctx = build_dataset_context(app_state.ch)
+    if app_state.cache is not None:
+        app_state.judge = Judge(app_state.cache, app_state.ctx.dataset_version)
+        if app_state.router is not None:
+            app_state.router.judge = app_state.judge
+    app_state.conversations.clear()
 
 
 def startup() -> None:

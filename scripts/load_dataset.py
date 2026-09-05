@@ -17,28 +17,38 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps" / "api"))
+from app.services.crypto import FieldCipher  # noqa: E402
+from app.services.narration import parse_narration  # noqa: E402
+
 DB = "tbx_finance"
 """Overridden by --db; the scale test loads into a sibling database."""
 
 TABLES: dict[str, tuple[str, list[str]]] = {
-    "vendors": ("vendors.csv",
-                ["vendor_id", "vendor_name", "legal_name", "category", "status",
-                 "country", "currency", "onboarded_at"]),
-    "accounts": ("accounts.csv",
-                 ["account_code", "account_name", "account_type", "parent_code", "is_active"]),
-    "transactions": ("transactions.csv",
-                     ["transaction_id", "txn_date", "posted_at", "vendor_id", "account_code",
-                      "category", "description", "amount", "currency", "direction", "status",
-                      "payment_method", "reconciliation_status", "invoice_ref", "payout_id"]),
-    "vendor_payouts": ("vendor_payouts.csv",
-                       ["payout_id", "payout_date", "vendor_id", "amount", "currency",
-                        "status", "method", "invoice_count", "reference"]),
-    "reconciliation": ("reconciliation.csv",
-                       ["recon_id", "transaction_id", "status", "matched_at",
-                        "bank_reference", "variance_amount", "note"]),
+    "bank": ("bank.csv", ["bank_code", "bank_name"]),
+    "account": ("account.csv",
+                ["account_id", "entity_id", "account_number", "program_id",
+                 "available_balance", "bank_code"]),
+    "transaction": ("transaction.csv",
+                    ["transaction_id", "account_id", "transaction_date", "transaction_type",
+                     "description", "transaction_amount", "transaction_reference_id",
+                     "utr_number"]),
 }
 
-LOAD_ORDER = ["vendors", "accounts", "transactions", "vendor_payouts", "reconciliation"]
+LOAD_ORDER = ["bank", "account", "transaction"]
+
+INSERT_COLUMNS: dict[str, list[str]] = {
+    "bank": ["bank_code", "bank_name"],
+    "account": ["account_id", "entity_id", "account_number_enc", "account_last4", "program_id",
+                "available_balance", "bank_code"],
+    "transaction": ["transaction_id", "account_id", "entity_id", "bank_code", "transaction_date",
+                    "transaction_type", "description", "counterparty", "channel",
+                    "transaction_amount", "transaction_reference_id", "utr_enc", "utr_hash"],
+}
+"""What actually goes into ClickHouse: the CSV columns with plaintext sensitive fields
+replaced by their encrypted form and blind index, plus derived columns."""
+
+ACCOUNT_OWNER: dict[str, tuple[str, str]] = {}
 
 
 class ClickHouse:
@@ -95,6 +105,36 @@ def check_headers(path: Path, required: list[str]) -> list[str]:
     return headers
 
 
+CIPHER: FieldCipher | None = None
+
+
+def transform(table: str, r: dict) -> None:
+    """Encrypt sensitive fields, add blind indexes and derived columns, in place."""
+    assert CIPHER is not None
+    if table == "account":
+        number = (r.get("account_number") or "").strip()
+        r["account_number_enc"] = CIPHER.encrypt(number)
+        r["account_last4"] = number[-4:]
+        r["account_number"] = ""
+    elif table == "transaction":
+        r["entity_id"], r["bank_code"] = ACCOUNT_OWNER.get(r["account_id"], ("", ""))
+        utr = (r.get("utr_number") or "").strip()
+        r["utr_enc"] = CIPHER.encrypt(utr)
+        r["utr_hash"] = CIPHER.blind_index(utr)
+        r["utr_number"] = ""
+        r["counterparty"], r["channel"] = parse_narration(r.get("description") or "")
+
+
+def load_account_owner(ch: "ClickHouse") -> None:
+    if ACCOUNT_OWNER:
+        return
+    for line in ch.execute(f"SELECT account_id, entity_id, bank_code FROM {DB}.account FINAL").splitlines():
+        aid, eid, bc = line.split("\t")
+        ACCOUNT_OWNER[aid] = (eid, bc)
+    if not ACCOUNT_OWNER:
+        raise SystemExit("account is empty; load account.csv before transaction.csv")
+
+
 def stream_load(ch: "ClickHouse", table: str, path: Path, required: list[str]) -> dict:
     """Validate and insert in chunks without holding the file in memory.
 
@@ -104,7 +144,10 @@ def stream_load(ch: "ClickHouse", table: str, path: Path, required: list[str]) -
     headers = check_headers(path, required)
     nulls = {c: 0 for c in required}
     rows = 0
-    cols = ",".join(required)
+    out_cols = INSERT_COLUMNS[table]
+    cols = ",".join(out_cols)
+    if table == "transaction":
+        load_account_owner(ch)
 
     with path.open(newline="") as fh:
         reader = csv.DictReader(fh)
@@ -112,18 +155,22 @@ def stream_load(ch: "ClickHouse", table: str, path: Path, required: list[str]) -
         for r in reader:
             rows += 1
             for c in required:
-                if not (r.get(c) or "").strip():
+                if not (r.get(c) or "").strip() and c not in EMPTY_OK.get(table, ()):
                     nulls[c] += 1
+            transform(table, r)
             batch.append(r)
             if len(batch) >= CHUNK:
                 ch.execute(f"INSERT INTO {DB}.{table} ({cols}) FORMAT TabSeparated",
-                           to_tsv(batch, required, table))
+                           to_tsv(batch, out_cols, table))
                 batch.clear()
                 if rows % (CHUNK * 10) == 0:
                     print(f"    {table}: {rows:,} rows...", flush=True)
         if batch:
             ch.execute(f"INSERT INTO {DB}.{table} ({cols}) FORMAT TabSeparated",
-                       to_tsv(batch, required, table))
+                       to_tsv(batch, out_cols, table))
+
+    if table == "account":
+        ACCOUNT_OWNER.clear()
 
     dupes = duplicate_ids(ch, table, required[0]) if rows else 0
     bad = dupes + sum(nulls.values())
@@ -179,10 +226,8 @@ def referential_checks(ch: "ClickHouse", loaded: set[str]) -> list[str]:
     """
     problems = []
     checks = [
-        ("transactions", "vendor_id", "vendors", "vendor_id"),
-        ("transactions", "account_code", "accounts", "account_code"),
-        ("vendor_payouts", "vendor_id", "vendors", "vendor_id"),
-        ("reconciliation", "transaction_id", "transactions", "transaction_id"),
+        ("account", "bank_code", "bank", "bank_code"),
+        ("transaction", "account_id", "account", "account_id"),
     ]
     for table, col, ref, ref_col in checks:
         if table not in loaded or ref not in loaded:
@@ -198,9 +243,12 @@ def referential_checks(ch: "ClickHouse", loaded: set[str]) -> list[str]:
     return problems
 
 
-NULLABLE_COLUMNS: dict[str, set[str]] = {
-    "reconciliation": {"matched_at"},
+NULLABLE_COLUMNS: dict[str, set[str]] = {}
+
+EMPTY_OK: dict[str, set[str]] = {
+    "transaction": {"transaction_reference_id", "utr_number", "description"},
 }
+"""Columns the schema declares DEFAULT NULL; an empty cell is not a quality defect."""
 """Columns declared Nullable in the schema; an empty cell becomes the TabSeparated \\N marker
 because an empty string will not parse as a DateTime."""
 
@@ -238,11 +286,14 @@ def main() -> int:
     args = ap.parse_args()
     global DB
     DB = args.db
+    global CIPHER
+    CIPHER = FieldCipher.from_env()
 
     raw = Path(args.raw)
     ch = ClickHouse(args.url, args.user, args.password)
     ch.execute(f"CREATE DATABASE IF NOT EXISTS {DB}")
     schema = Path("infra/clickhouse/001_schema.sql").read_text().replace("tbx_finance", DB)
+    schema = "\n".join(line.split("--", 1)[0] for line in schema.splitlines())
     for stmt in [s.strip() for s in schema.split(";") if s.strip()]:
         ch.execute(stmt)
 

@@ -7,7 +7,7 @@ const ORIGIN = process.env.TBX_ORIGIN || 'http://127.0.0.1:8080';
 const ps = run('docker', ['compose', 'ps', '--format', 'json']);
 if (ps.status !== 0) fail('G9', 'docker compose ps failed');
 const services = ps.out.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
-for (const required of ['api', 'web', 'nginx', 'clickhouse', 'postgres', 'redis']) {
+for (const required of ['api', 'web', 'nginx', 'clickhouse', 'mysql', 'redis']) {
   const svc = services.find(s => s.Service === required);
   if (!svc) fail('G9', `service not running: ${required}`);
   if (!/^Up/.test(svc.State === 'running' ? 'Up' : svc.Status)) fail('G9', `${required}: ${svc.Status}`);
@@ -29,7 +29,7 @@ if (!hj.ready) fail('G9', 'API reports not ready inside the stack');
 
 const chat = await fetch(`${ORIGIN}/api/v1/chat`, {
   method: 'POST', headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ message: 'How much did we spend with Acme Technologies last month?' }),
+  body: JSON.stringify({ message: 'How much did I spend with SWIGGY INSTAMART last month?' }),
 });
 if (!chat.ok) fail('G9', `chat through nginx returned ${chat.status}`);
 const cj = await chat.json();
@@ -38,7 +38,7 @@ if (cj.state !== 'answer' || !cj.evidence) fail('G9', `chat via nginx: state=${c
 const started = Date.now();
 const sse = await fetch(`${ORIGIN}/api/v1/chat/stream`, {
   method: 'POST', headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ message: 'Show me the top vendors last month' }),
+  body: JSON.stringify({ message: 'Who are my top counterparties last month?' }),
 });
 if (!sse.ok) fail('G9', `SSE through nginx returned ${sse.status}`);
 const reader = sse.body.getReader();
@@ -58,7 +58,7 @@ const evalRes = await fetch(`${ORIGIN}/api/v1/admin/evaluations`);
 if (!evalRes.ok) fail('G9', `evaluations endpoint returned ${evalRes.status}`);
 
 const usageText = JSON.stringify(usage);
-for (const leak of ['vendor_name', 'transaction_id', 'Acme', 'amount'])
+for (const leak of ['counterparty', 'transaction_id', 'SWIGGY', 'amount', 'utr', 'account_number'])
   if (usageText.includes(leak)) fail('G9', `usage endpoint leaks financial data: ${leak}`);
 
 pass('G9', `${services.length} services up`,

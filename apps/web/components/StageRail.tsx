@@ -17,8 +17,9 @@ function summary(s: StageState): string {
   switch (s.key) {
     case 'understand': return get('judge') ?? (get('intent') ? `${get('intent')}${get('metric') ? `, ${get('metric')}` : ''}` : (get('reason') ? `not relevant: ${get('reason')}` : ''));
     case 'resolve': {
-      const v = get('vendor'), from = get('from'), to = get('to');
-      return [v && v.split(' to ')[0], from && to ? `${from} to ${to}` : null].filter(Boolean).join('; ');
+      const cp = get('counterparty'), acct = get('account'), from = get('from'), to = get('to');
+      return [cp && cp.split(' to ').pop(), acct && `account ${acct}`, from && to ? `${from} to ${to}` : null]
+        .filter(Boolean).join('; ');
     }
     case 'plan': return get('judge') ?? (d.length ? 'validated' : '');
     case 'query': return get('rows read') ? `${get('rows read')} rows read` : (get('query time') ?? '');

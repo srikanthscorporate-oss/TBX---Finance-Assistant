@@ -7,11 +7,14 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from ..contracts.enums import Intent, Metric
+from ..contracts.enums import Intent, Metric, TransactionType
 from ..contracts.evidence import VerificationResult
 from ..contracts.plan import FinanceQueryPlan
 
 REL_TOLERANCE = 1e-6
+
+SPEND_INTENTS = {Intent.SPEND_SUMMARY, Intent.COUNTERPARTY_SPEND, Intent.TOP_COUNTERPARTIES}
+_ = TransactionType
 """Absorbs float round-tripping through JSON; Decimal64 sums are exact."""
 
 
@@ -29,7 +32,7 @@ def verify(
     _check_window_within_dataset(vr, plan, dataset_min, dataset_max)
     _check_entity_resolved(vr, plan)
     _check_rows_present(vr, plan, rows, aggregate)
-    _check_currency(vr, rows, aggregate)
+    _check_single_type(vr, plan, aggregate)
     _check_aggregate_matches_breakdown(vr, plan, rows, aggregate)
     _check_no_negative_where_impossible(vr, plan, rows, aggregate)
     _check_limit_not_truncating(vr, plan, rows)
@@ -63,11 +66,15 @@ def _check_window_within_dataset(vr, plan, dmin, dmax) -> None:
 
 
 def _check_entity_resolved(vr: VerificationResult, plan: FinanceQueryPlan) -> None:
-    if plan.vendor_name and not plan.vendor_id:
-        vr.add("vendor_resolved", False,
-               f"vendor {plan.vendor_name!r} was never resolved to an id")
-    elif plan.vendor_id:
-        vr.add("vendor_resolved", True, f"{plan.vendor_name or '?'} -> {plan.vendor_id}")
+    if plan.counterparty_name and not plan.counterparty:
+        vr.add("counterparty_resolved", False,
+               f"counterparty {plan.counterparty_name!r} was never resolved")
+    elif plan.counterparty:
+        vr.add("counterparty_resolved", True, f"{plan.counterparty_name or '?'} -> {plan.counterparty}")
+    if plan.account_last4 and not plan.account_id:
+        vr.add("account_resolved", False, f"account ending {plan.account_last4} was never resolved")
+    elif plan.account_id:
+        vr.add("account_resolved", True, plan.account_id)
 
 
 def _check_rows_present(vr, plan, rows, aggregate) -> None:
@@ -80,21 +87,22 @@ def _check_rows_present(vr, plan, rows, aggregate) -> None:
         vr.add("records_returned", True, f"{count} records")
 
 
-def _check_currency(vr, rows, aggregate) -> None:
-    variants = None
-    if aggregate and "currency_variants" in aggregate:
-        variants = int(aggregate["currency_variants"] or 0)
-    else:
-        seen = {r.get("currency") for r in rows if r.get("currency")}
-        variants = len(seen) if seen else None
-
-    if variants is None:
+def _check_single_type(vr, plan, aggregate) -> None:
+    """A spend figure must never silently add credits to debits."""
+    if aggregate is None or "type_variants" not in aggregate:
         return
-    if variants > 1:
-        vr.add("currency_consistent", False,
-               f"{variants} currencies in one aggregate; totals would be meaningless")
+    variants = int(aggregate["type_variants"] or 0)
+    spend = plan.intent in SPEND_INTENTS and plan.metric is not Metric.COUNT
+    if spend and variants > 1:
+        vr.add("single_transaction_type", False,
+               "debits and credits mixed in a spend total")
+    elif variants > 1:
+        vr.add("single_transaction_type", True,
+               "credits and debits combined; the question did not restrict the type",
+               severity="warning")
     else:
-        vr.add("currency_consistent", True, "single currency")
+        vr.add("single_transaction_type", True,
+               plan.transaction_type.value if plan.transaction_type else "one type present")
 
 
 def _check_aggregate_matches_breakdown(vr, plan, rows, aggregate) -> None:
@@ -121,8 +129,7 @@ def _check_aggregate_matches_breakdown(vr, plan, rows, aggregate) -> None:
 
 
 def _check_no_negative_where_impossible(vr, plan, rows, aggregate) -> None:
-    if plan.intent not in {Intent.TOTAL_SPEND, Intent.VENDOR_SPEND,
-                           Intent.CATEGORY_SPEND, Intent.VENDOR_PAYOUTS}:
+    if plan.intent not in SPEND_INTENTS:
         return
     values = [_as_float(r.get("value")) for r in rows if "value" in r]
     if aggregate is not None:
@@ -137,7 +144,12 @@ def _check_no_negative_where_impossible(vr, plan, rows, aggregate) -> None:
 
 
 def _check_limit_not_truncating(vr, plan, rows) -> None:
-    if rows and len(rows) >= plan.limit:
+    total = int(rows[0].get("total_matches") or 0) if rows else 0
+    if rows and total > len(rows):
+        vr.add("result_complete", True,
+               f"showing {len(rows)} of {total} matching rows (limit {plan.limit})",
+               severity="warning")
+    elif rows and len(rows) >= plan.limit:
         vr.add("result_complete", True,
                f"result hit the {plan.limit}-row limit and may be partial",
                severity="warning")

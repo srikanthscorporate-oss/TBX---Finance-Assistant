@@ -23,9 +23,12 @@ CLAUDE.md
 
 # Scale-test data (gigabytes, regenerated on demand)
 data/scale/
+data/scale_bank/
 data/*.orig
 data/*.bak
 
 # TypeScript incremental build state
 apps/web/tsconfig.tsbuildinfo
 *.tsbuildinfo
+
+/docs

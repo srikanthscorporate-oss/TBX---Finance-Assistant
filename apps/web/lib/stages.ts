@@ -73,7 +73,8 @@ export function stageDetail(stage: StageState): [string, string][] {
         if (d.group_by && d.group_by !== 'none') out.push(['grouped by', String(d.group_by)]);
         break;
       case 'entity_resolved':
-        out.push(['vendor', `${d.query} to ${d.vendor_id}`]);
+        if (d.counterparty) out.push(['counterparty', d.query && d.query !== d.counterparty ? `${d.query} to ${d.counterparty}` : String(d.counterparty)]);
+        if (d.account) out.push(['account', String(d.account)]);
         if (d.match) out.push(['match', String(d.match)]);
         break;
       case 'dates_resolved':

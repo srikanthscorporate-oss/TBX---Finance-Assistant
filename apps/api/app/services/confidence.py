@@ -11,7 +11,7 @@ WEIGHTS = {
     "dates_explicit": 0.18,
     "verification_clean": 0.25,
     "data_complete": 0.15,
-    "single_currency": 0.10,
+    "single_type": 0.10,
     "deterministic_metric": 0.10,
 }
 """Weight each signal contributes when satisfied; weights sum to 1.0."""
@@ -44,10 +44,10 @@ def compute(
         signals["entity_exact"] = 1.0
     elif entity_match is MatchKind.UNIQUE_FUZZY:
         signals["entity_exact"] = max(0.0, min(1.0, entity_score))
-        reasons.append(f"vendor matched approximately (score {entity_score:.2f})")
+        reasons.append(f"counterparty matched approximately (score {entity_score:.2f})")
     else:
         signals["entity_exact"] = 0.0
-        reasons.append("vendor could not be resolved unambiguously")
+        reasons.append("counterparty could not be resolved unambiguously")
 
     if plan.date_range is None:
         signals["dates_explicit"] = 0.7
@@ -81,8 +81,8 @@ def compute(
     else:
         signals["data_complete"] = 1.0
 
-    cur = next((c for c in verification.checks if c.name == "currency_consistent"), None)
-    signals["single_currency"] = 1.0 if (cur is None or cur.passed) else 0.0
+    cur = next((c for c in verification.checks if c.name == "single_transaction_type"), None)
+    signals["single_type"] = 1.0 if (cur is None or cur.passed) else 0.0
 
     signals["deterministic_metric"] = 1.0
 

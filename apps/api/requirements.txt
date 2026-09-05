@@ -36,6 +36,8 @@ certifi==2026.7.22
     #   httpcore
     #   httpx
     #   requests
+cffi==2.1.1 ; platform_python_implementation != 'PyPy'
+    # via cryptography
 charset-normalizer==3.5.1
     # via requests
 click==8.5.0
@@ -45,6 +47,8 @@ click==8.5.0
     #   uvicorn
 colorama==0.4.6 ; sys_platform == 'win32'
     # via tqdm
+cryptography==50.0.1
+    # via tbx-api
 distro==1.9.0
     # via openai
 et-xmlfile==2.0.0
@@ -147,6 +151,8 @@ protobuf==7.36.1
     # via
     #   googleapis-common-protos
     #   opentelemetry-proto
+pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
+    # via cffi
 pydantic==2.13.5
     # via
     #   fastapi
@@ -159,6 +165,8 @@ pydantic-core==2.46.5
     # via pydantic
 pydantic-settings==2.15.0
     # via litellm
+pymysql==1.2.0
+    # via tbx-api
 python-dateutil==2.9.0.post0
     # via botocore
 python-dotenv==1.2.3

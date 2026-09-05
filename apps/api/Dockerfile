@@ -28,6 +28,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY apps/api/app ./app
 COPY apps/api/tests ./tests
 COPY prompts /srv/prompts
+# The canonical DDL: services/ingest.py replays it when a user-supplied MySQL
+# source is initialised, so the ingested shape cannot drift from the schema file.
+COPY infra/clickhouse/001_schema.sql /srv/infra/clickhouse/001_schema.sql
 
 RUN useradd --system --uid 10001 --home /srv tbx \
  && chown -R tbx:tbx /srv

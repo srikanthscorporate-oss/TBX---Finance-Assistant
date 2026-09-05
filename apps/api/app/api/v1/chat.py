@@ -21,12 +21,16 @@ router = APIRouter(prefix="/api/v1", tags=["chat"])
 class ChatRequest(BaseModel):
     """One turn.
 
-    `resolved_vendor_id` answers a clarification by option id, in which case
-    `message` may be empty. `model` is "auto" or a catalog model id.
+    `resolved_value` (with optional `resolved_field`) answers a clarification by option
+    value, in which case `message` may be empty. `entity_id` scopes the conversation to
+    one customer entity; omitted keeps the conversation's current scope. `model` is
+    "auto" or a catalog model id.
     """
     message: str = Field(default="", max_length=2000)
     conversation_id: str | None = None
-    resolved_vendor_id: str | None = None
+    resolved_value: str | None = Field(default=None, max_length=200)
+    resolved_field: str | None = Field(default=None, max_length=32)
+    entity_id: str | None = Field(default=None, max_length=64)
     model: str | None = "auto"
 
 
@@ -41,11 +45,12 @@ async def chat(req: ChatRequest) -> AssistantResponse:
 
     pipeline = app_state.pipeline()
     started = time.perf_counter()
-    if req.resolved_vendor_id:
-        result = await asyncio.to_thread(pipeline.run_resolved, req.resolved_vendor_id,
-                                         state, req.model)
+    if req.resolved_value:
+        result = await asyncio.to_thread(pipeline.run_resolved, req.resolved_value,
+                                         state, req.model, req.resolved_field)
     else:
-        result = await asyncio.to_thread(pipeline.run, req.message, state, req.model)
+        result = await asyncio.to_thread(pipeline.run, req.message, state, req.model,
+                                         req.entity_id)
     result.duration_ms = round((time.perf_counter() - started) * 1000, 1)
     app_state.record_run(result)
     app_state.save_conversation(state)
@@ -74,11 +79,12 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
         pipeline = app_state.pipeline(on_event=on_event)
         try:
             started = time.perf_counter()
-            if req.resolved_vendor_id:
-                result = await asyncio.to_thread(pipeline.run_resolved,
-                                                 req.resolved_vendor_id, state, req.model)
+            if req.resolved_value:
+                result = await asyncio.to_thread(pipeline.run_resolved, req.resolved_value,
+                                                 state, req.model, req.resolved_field)
             else:
-                result = await asyncio.to_thread(pipeline.run, req.message, state, req.model)
+                result = await asyncio.to_thread(pipeline.run, req.message, state, req.model,
+                                                 req.entity_id)
             result.duration_ms = round((time.perf_counter() - started) * 1000, 1)
             app_state.record_run(result)
             app_state.save_conversation(state)

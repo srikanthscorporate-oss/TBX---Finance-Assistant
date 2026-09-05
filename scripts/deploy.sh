@@ -29,7 +29,7 @@ fi
 
 export IMAGE_TAG="${TAG}"
 docker compose build api web
-docker compose up -d clickhouse postgres redis
+docker compose up -d clickhouse mysql redis
 timeout 120 bash -c 'until docker compose ps clickhouse | grep -q healthy; do sleep 3; done'
 
 rows=\$(docker compose exec -T clickhouse clickhouse-client \

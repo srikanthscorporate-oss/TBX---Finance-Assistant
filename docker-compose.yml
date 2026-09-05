@@ -40,6 +40,7 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     image: tbx-api:${IMAGE_TAG:-dev}
+    platform: linux/amd64
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -56,7 +57,7 @@ services:
     networks: [app, data, observability]
     depends_on:
       clickhouse: { condition: service_healthy }
-      postgres:   { condition: service_healthy }
+      mysql:      { condition: service_healthy }
       redis:      { condition: service_healthy }
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health')"]
@@ -71,6 +72,7 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     image: tbx-api:${IMAGE_TAG:-dev}
+    platform: linux/amd64
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
     env_file: [.env]
@@ -86,6 +88,7 @@ services:
       context: ./apps/web
       dockerfile: Dockerfile
     image: tbx-web:${IMAGE_TAG:-dev}
+    platform: linux/amd64
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -104,11 +107,14 @@ services:
       CLICKHOUSE_PASSWORD: ${CH_ADMIN_PASSWORD}
       CLICKHOUSE_DB: ${CH_DB}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      CH_AGENT_PASSWORD: ${CH_AGENT_PASSWORD}
     ulimits:
       nofile: { soft: 262144, hard: 262144 }
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./infra/clickhouse/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+      - ./infra/clickhouse/002_readonly_user.sql:/docker-entrypoint-initdb.d/002_readonly_user.sql.tpl:ro
+      - ./infra/clickhouse/init-agent-user.sh:/docker-entrypoint-initdb.d/003_agent_user.sh:ro
       - ./infra/clickhouse/memory.xml:/etc/clickhouse-server/config.d/memory.xml:ro
     networks: [data]
     ports: ["18123:8123"]   # local dev only; remove on the VPS
@@ -120,22 +126,30 @@ services:
       start_period: 20s
     logging: *default-logging
 
-  postgres:
-    image: postgres:16-alpine
+  # MySQL is the application-state store and the reference target for the
+  # Data Source page: point the page at this service (host `mysql`, port 3306)
+  # to try the bring-your-own-endpoint flow locally. A user-supplied MySQL
+  # endpoint becomes the assistant's dataset once initialised.
+  mysql:
+    image: mysql:8.4
     restart: unless-stopped
+    command: ["mysqld", "--mysql-native-password=ON", "--innodb-buffer-pool-size=256M"]
     environment:
-      POSTGRES_DB: ${PG_DB}
-      POSTGRES_USER: ${PG_USER}
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DB}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./infra/postgres/init-langfuse-db.sh:/docker-entrypoint-initdb.d/init-langfuse-db.sh:ro
+      - mysql_data:/var/lib/mysql
+      - ./infra/mysql/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
     networks: [data]
+    ports: ["127.0.0.1:13306:3306"]   # local dev only; remove on the VPS
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d ${PG_DB}"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 12
+      start_period: 30s
     logging: *default-logging
 
   redis:
@@ -186,13 +200,33 @@ services:
     restart: "no"
 
   # ---- Observability -----------------------------------------------------
-  # Langfuse OSS. Given its own Postgres database and its own ClickHouse
-  # database on the shared servers -- logically isolated from finance data.
+  # Langfuse OSS. It requires PostgreSQL, so Postgres survives here *only* as a
+  # Langfuse dependency under the observability profile; the application tier
+  # itself runs on MySQL. Langfuse also gets its own ClickHouse database on the
+  # shared server -- logically isolated from finance data.
+  langfuse-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${LANGFUSE_PG_DB}
+      POSTGRES_USER: ${LANGFUSE_PG_USER}
+      POSTGRES_PASSWORD: ${LANGFUSE_PG_PASSWORD}
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    networks: [observability]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LANGFUSE_PG_USER} -d ${LANGFUSE_PG_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+    profiles: ["observability"]
+
   langfuse-web:
     image: langfuse/langfuse:3
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://${PG_USER}:${PG_PASSWORD}@postgres:5432/${LANGFUSE_PG_DB}
+      DATABASE_URL: postgresql://${LANGFUSE_PG_USER}:${LANGFUSE_PG_PASSWORD}@langfuse-postgres:5432/${LANGFUSE_PG_DB}
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_USER: ${CH_ADMIN_USER}
       CLICKHOUSE_PASSWORD: ${CH_ADMIN_PASSWORD}
@@ -213,7 +247,7 @@ services:
       LANGFUSE_INIT_PROJECT_ID: tbx-finance
     networks: [observability, data]
     depends_on:
-      postgres:   { condition: service_healthy }
+      langfuse-postgres: { condition: service_healthy }
       clickhouse: { condition: service_healthy }
       minio:      { condition: service_healthy }
     logging: *default-logging
@@ -223,7 +257,7 @@ services:
     image: langfuse/langfuse-worker:3
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://${PG_USER}:${PG_PASSWORD}@postgres:5432/${LANGFUSE_PG_DB}
+      DATABASE_URL: postgresql://${LANGFUSE_PG_USER}:${LANGFUSE_PG_PASSWORD}@langfuse-postgres:5432/${LANGFUSE_PG_DB}
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_USER: ${CH_ADMIN_USER}
       CLICKHOUSE_PASSWORD: ${CH_ADMIN_PASSWORD}
@@ -240,7 +274,7 @@ services:
       TELEMETRY_ENABLED: "false"
     networks: [observability, data]
     depends_on:
-      postgres:   { condition: service_healthy }
+      langfuse-postgres: { condition: service_healthy }
       clickhouse: { condition: service_healthy }
     logging: *default-logging
     profiles: ["observability"]
@@ -253,6 +287,7 @@ networks:
 
 volumes:
   clickhouse_data:
-  postgres_data:
+  mysql_data:
+  langfuse_postgres_data:
   redis_data:
   minio_data:

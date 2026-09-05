@@ -8,28 +8,28 @@ from ..contracts.events import AgentEvent, EventType
 from ..contracts.plan import FinanceQueryPlan
 from ..llm.router import UsageLedger
 from ..services.dates import DatasetCalendar
-from ..services.resolver import VendorRecord
+from ..services.resolver import AccountRecord, CounterpartyRecord
 
 CAPABILITIES = [
-    "Spend by vendor, category, account or period",
-    "Vendor payouts and their status",
-    "Reconciliation status, unreconciled transactions and reconciliation rate",
-    "Transaction lookup and filtering",
-    "Period-over-period comparisons and trends",
+    "Spend and receipts by period, counterparty, account, bank or channel",
+    "Transaction lists filtered by amount, date, type or counterparty",
+    "Lookup by reference number or UTR",
+    "Account balances",
+    "Period-over-period comparisons, trends and largest transactions",
 ]
 
 GUIDED_QUESTIONS = [
-    "How much did we spend last month?",
-    "Which transactions are still unreconciled?",
-    "Show me the top vendors last month",
-    "What is our reconciliation rate for the last 6 months?",
+    "How much did I spend last month?",
+    "List transactions under 500 rupees this month",
+    "Who did I pay the most in the last 90 days?",
+    "What is my account balance?",
 ]
 """Offered with every refusal; each must be answerable by the pipeline."""
 
 OUT_OF_SCOPE_MESSAGE = (
     "Your input isn't relevant to the services we provide. I answer questions "
-    "about your spend, vendor payouts and reconciliation, from your financial "
-    "records only. Try one of these instead."
+    "about your bank transactions, counterparties, balances and references, from "
+    "your records only. Try one of these instead."
 )
 
 
@@ -41,10 +41,24 @@ class DatasetContext:
     """
 
     calendar: DatasetCalendar
-    vendors: list[VendorRecord]
-    categories: list[str]
-    currency: str
+    counterparties: list[CounterpartyRecord]
+    accounts: list[AccountRecord]
+    banks: dict[str, str]
+    entities: list[str]
+    currency: str = "INR"
     dataset_version: str = "unknown"
+    default_entity: str | None = None
+
+    def counterparties_for(self, entity_id: str | None) -> list[CounterpartyRecord]:
+        if not entity_id:
+            return self.counterparties
+        scoped = [c for c in self.counterparties if entity_id in c.entities]
+        return scoped or self.counterparties
+
+    def accounts_for(self, entity_id: str | None) -> list[AccountRecord]:
+        if not entity_id:
+            return self.accounts
+        return [a for a in self.accounts if a.entity_id == entity_id]
 
 
 @dataclass
@@ -61,6 +75,8 @@ class ConversationState:
     turns: int = 0
     pending_plan: FinanceQueryPlan | None = None
     pending_question: str | None = None
+    pending_field: str | None = None
+    entity_id: str | None = None
 
 
 @dataclass

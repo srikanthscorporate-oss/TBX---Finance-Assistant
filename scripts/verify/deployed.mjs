@@ -23,12 +23,13 @@ if (!/StrawHat Finance Assistant/.test(body)) fail('G12', 'UI shell not served')
 
 const chat = await fetch(`${ORIGIN}/api/v1/chat`, {
   method: 'POST', headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ message: 'Which transactions are still unreconciled?' }),
+  body: JSON.stringify({ message: 'What is my balance?' }),
   signal: AbortSignal.timeout(45000),
 });
 if (!chat.ok) fail('G12', `production chat returned ${chat.status}`);
 const cj = await chat.json();
 if (cj.state !== 'answer' || !cj.evidence) fail('G12', `production chat state=${cj.state}`);
+if (/\b\d{9,}\b/.test(JSON.stringify(cj.evidence.records || []))) fail('G12', 'production balance answer exposes a full account number');
 
 const admin = await fetch(`${ORIGIN}/api/v1/admin/usage`, { signal: AbortSignal.timeout(10000) });
 if (admin.ok) fail('G12', 'admin endpoint is publicly reachable in production');

@@ -39,8 +39,11 @@ same model with the rejection reason, then tries a different compliant model.
 Going bigger is not a recovery strategy under this constraint, so the tier that
 did that was removed rather than capped.
 
-> **Status:** measured against live models on 2026-09-04. The primary
-> row below is real. The comparison rows are still to be filled in; running the
+> **Status:** the row below was measured against live models on 2026-09-04 on
+> the previous vendor/payout dataset. The golden set has since been rewritten for
+> the bank schema (64 questions, 74 turns; expected values from
+> `transaction.csv` + `account.csv`, default entity) and only a stub-planner run
+> exists for it so far; the row must be re-measured before it is quoted. The comparison rows are still to be filled in; running the
 > larger model across the whole set is what makes the small model's result mean
 > something, and that run has not been done yet.
 
@@ -139,8 +142,10 @@ knobs are worth setting once the key is in:
 It enters the chain after the free fallback, so a Groq outage or rate limit now
 has two providers to fall through rather than one. Whether it should be promoted
 to primary is an empirical question: run the golden set against it and compare.
-The dataset is INR-denominated Indian vendor data, which is the case Sarvam's
-models are tuned for, so it is a reasonable candidate rather than just redundancy.
+The dataset is INR-denominated Indian bank statement data (NEFT/IMPS/UPI
+narrations, counterparties such as SWIGGY INSTAMART and BAJAJ FINANCE LIMITED),
+which is the case Sarvam's models are tuned for, so it is a reasonable candidate
+rather than just redundancy.
 
 ### On the self-hosted tier
 
@@ -166,8 +171,8 @@ Measured over 68 turns across 64 golden questions.
 The three properties the challenge actually scores held perfectly: **grounding
 100%**, **verification 100%**,
 **hallucination-free 100%**. Not one answer stated
-a figure that was not computed and verified first, and vendor resolution was
-100%.
+a figure that was not computed and verified first, and counterparty (then
+vendor) resolution was 100%.
 
 The open problem is efficiency, not accuracy. Escalation is running at
 44.1% and 3.04 calls per turn

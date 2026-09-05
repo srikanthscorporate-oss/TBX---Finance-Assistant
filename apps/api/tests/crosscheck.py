@@ -1,158 +1,263 @@
 #!/usr/bin/env python3
-"""Cross-checks compile_plan() -> ClickHouse against a naive loop over data/raw CSVs.
+"""Cross-checks compile_plan() -> ClickHouse against a naive loop over data/raw/*.csv.
 
-The two paths share no code. Prints "N/N checks passed" and exits non-zero on any mismatch.
+The two paths share no query code: the CSV side joins transaction to account by hand,
+parses the narration with parse_narration and filters with plain comparisons. Prints
+CROSSCHECK_PASS and exits non-zero on any mismatch.
 """
 from __future__ import annotations
 
-import csv
-import os
 import sys
 from collections import defaultdict
-from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from app.contracts.enums import GroupBy, Intent, Metric, ReconStatus  # noqa: E402
-from app.contracts.plan import DateRange, FinanceQueryPlan  # noqa: E402
-from app.db.clickhouse import ClickHouseClient  # noqa: E402
-from app.services.compiler import compile_plan  # noqa: E402
-from app.services.dates import DatasetCalendar, resolve  # noqa: E402
-
-RAW = Path(__file__).resolve().parents[3] / "data" / "raw"
-
-
-def load_csv(name):
-    with (RAW / name).open() as fh:
-        return list(csv.DictReader(fh))
-
-
-TXNS = load_csv("transactions.csv")
-PAYOUTS = load_csv("vendor_payouts.csv")
-CAL = DatasetCalendar(
-    min_date=min(date.fromisoformat(r["txn_date"]) for r in TXNS),
-    max_date=max(date.fromisoformat(r["txn_date"]) for r in TXNS),
+from bank_fixture import (  # noqa: E402
+    Txn,
+    calendar,
+    ch_client,
+    data_key,
+    default_entity,
+    load_accounts,
+    load_transactions,
 )
 
+from app.contracts.enums import (  # noqa: E402
+    Channel,
+    GroupBy,
+    Intent,
+    Metric,
+    ReferenceKind,
+    TransactionType,  # noqa: E402
+)
+from app.contracts.plan import DateRange, FinanceQueryPlan  # noqa: E402
+from app.services.compiler import compile_plan  # noqa: E402
+from app.services.crypto import FieldCipher, load_key  # noqa: E402
+from app.services.dates import resolve  # noqa: E402
 
-def py_filter(rows, *, date_col, start=None, end=None, vendor=None, category=None,
-              recon_in=None, status=None):
-    out = []
-    for r in rows:
-        d = date.fromisoformat(r[date_col])
-        if start and d < start:
-            continue
-        if end and d > end:
-            continue
-        if vendor and r["vendor_id"] != vendor:
-            continue
-        if category and r["category"] != category:
-            continue
-        if recon_in and r["reconciliation_status"] not in recon_in:
-            continue
-        if status and r["status"] != status:
-            continue
-        out.append(r)
-    return out
+ACCOUNTS = load_accounts()
+TXNS = load_transactions(ACCOUNTS)
+CAL = calendar(TXNS)
+ENTITY = default_entity(TXNS)
+MINE = [t for t in TXNS if t.entity_id == ENTITY]
+
+failures: list[str] = []
+checks = 0
 
 
-def approx(a, b, tol=0.02):
+def check(name: str, ok: bool, detail: str = "") -> None:
+    global checks
+    checks += 1
+    print(f"[{'PASS' if ok else 'FAIL'}] {name}" + (f"\n        {detail}" if detail and not ok else ""))
+    if not ok:
+        failures.append(f"{name}: {detail}")
+
+
+def approx(a: float, b: float, tol: float = 0.02) -> bool:
     return abs(float(a) - float(b)) <= tol
 
 
+def period(rel: str) -> DateRange:
+    return resolve(DateRange(relative=rel), CAL)
+
+
+def py_filter(rows: list[Txn], *, dr: DateRange | None = None, counterparty: str | None = None,
+              txn_type: str | None = None, channel: str | None = None,
+              min_amount: float | None = None, max_amount: float | None = None) -> list[Txn]:
+    out = []
+    for t in rows:
+        if dr and not (dr.resolved_start <= t.txn_date <= dr.resolved_end):
+            continue
+        if counterparty and t.counterparty != counterparty:
+            continue
+        if txn_type and t.transaction_type != txn_type:
+            continue
+        if channel and t.channel != channel:
+            continue
+        if min_amount is not None and t.amount < min_amount:
+            continue
+        if max_amount is not None and t.amount > max_amount:
+            continue
+        out.append(t)
+    return out
+
+
+def run(ch, plan: FinanceQueryPlan, **kw):
+    cq = compile_plan(plan, **kw)
+    return cq, ch.query(cq.sql, cq.params)
+
+
+def aggregate_case(ch, name: str, plan: FinanceQueryPlan, rows: list[Txn], value) -> None:
+    cq, res = run(ch, plan)
+    got = res.rows[0] if res.rows else {}
+    got_value = float(got.get("value") or 0)
+    got_count = int(got.get("record_count") or 0)
+    ok = got_count == len(rows) and (value is None or approx(got_value, value))
+    check(name, ok, f"python value={value} rows={len(rows)}; clickhouse value={got_value} "
+                    f"rows={got_count}\n        SQL: {cq.sql}\n        PARAMS: {cq.params}")
+
+
 def main() -> int:
-    ch = ClickHouseClient(
-        host=os.getenv("CH_HOST", "localhost"), port=int(os.getenv("CH_PORT", "18123")),
-        user=os.getenv("CH_ADMIN_USER", "tbx_admin"),
-        password=os.getenv("CH_ADMIN_PASSWORD", "change-me-admin"),
-    )
+    ch = ch_client()
     assert ch.ping(), "ClickHouse is not reachable"
-    print(f"dataset window: {CAL.min_date} .. {CAL.max_date}  ({len(TXNS):,} transactions)\n")
+    print(f"dataset window: {CAL.min_date} .. {CAL.max_date}  ({len(TXNS):,} transactions, "
+          f"{len(MINE):,} for entity {ENTITY[:8]}…)\n")
 
-    failures = 0
-    cases = []
+    dr = period("last_month")
+    plan = FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, entity_id=ENTITY, date_range=dr)
+    rows = py_filter(MINE, dr=dr, txn_type="debit")
+    aggregate_case(ch, "spend_summary sum, last month (debits)", plan, rows,
+                   sum(t.amount for t in rows))
 
-    dr = resolve(DateRange(relative="last_month"), CAL)
-    plan = FinanceQueryPlan(intent=Intent.TOTAL_SPEND, date_range=dr, metric=Metric.SUM)
-    rows = py_filter(TXNS, date_col="txn_date", start=dr.resolved_start, end=dr.resolved_end)
-    cases.append(("total spend, last month", plan,
-                  sum(float(r["amount"]) for r in rows), len(rows)))
+    plan = FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, entity_id=ENTITY, date_range=dr,
+                            metric=Metric.COUNT)
+    rows = py_filter(MINE, dr=dr)
+    check("count metric leaves transaction_type unset", plan.transaction_type is None)
+    aggregate_case(ch, "spend_summary count, last month (both types)", plan, rows, len(rows))
 
-    dr2 = resolve(DateRange(relative="last_month"), CAL)
-    plan = FinanceQueryPlan(intent=Intent.VENDOR_SPEND, vendor_name="Acme Technologies",
-                            vendor_id="V1001", date_range=dr2, metric=Metric.SUM)
-    rows = py_filter(TXNS, date_col="txn_date", start=dr2.resolved_start,
-                     end=dr2.resolved_end, vendor="V1001")
-    cases.append(("Acme Technologies spend, last month", plan,
-                  sum(float(r["amount"]) for r in rows), len(rows)))
+    dr = period("this_year")
+    plan = FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, entity_id=ENTITY, date_range=dr)
+    rows = py_filter(MINE, dr=dr, txn_type="debit")
+    aggregate_case(ch, "spend_summary sum, this year", plan, rows, sum(t.amount for t in rows))
 
-    plan = FinanceQueryPlan(intent=Intent.UNRECONCILED, metric=Metric.COUNT, limit=1000)
-    rows = py_filter(TXNS, date_col="txn_date",
-                     recon_in={"unmatched", "pending", "disputed"})
-    cases.append(("unreconciled transactions (detail)", plan, None, len(rows)))
+    plan = FinanceQueryPlan(intent=Intent.COUNTERPARTY_SPEND, entity_id=ENTITY,
+                            counterparty_name="Swiggy", counterparty="SWIGGY")
+    rows = py_filter(MINE, counterparty="SWIGGY", txn_type="debit")
+    aggregate_case(ch, "counterparty_spend SWIGGY sum, all time", plan, rows,
+                   sum(t.amount for t in rows))
 
-    dr3 = resolve(DateRange(relative="last_quarter"), CAL)
-    plan = FinanceQueryPlan(intent=Intent.CATEGORY_SPEND, category="Marketing",
-                            date_range=dr3, metric=Metric.SUM)
-    rows = py_filter(TXNS, date_col="txn_date", start=dr3.resolved_start,
-                     end=dr3.resolved_end, category="Marketing")
-    cases.append(("Marketing spend, last quarter", plan,
-                  sum(float(r["amount"]) for r in rows), len(rows)))
+    plan = FinanceQueryPlan(intent=Intent.COUNTERPARTY_SPEND, entity_id=ENTITY,
+                            counterparty_name="Swiggy", counterparty="SWIGGY", metric=Metric.COUNT)
+    rows = py_filter(MINE, counterparty="SWIGGY")
+    aggregate_case(ch, "counterparty_spend SWIGGY count, all time", plan, rows, len(rows))
 
-    dr4 = resolve(DateRange(relative="last_6_months"), CAL)
-    plan = FinanceQueryPlan(intent=Intent.RECONCILIATION_RATE, date_range=dr4)
-    rows = py_filter(TXNS, date_col="txn_date", start=dr4.resolved_start, end=dr4.resolved_end)
-    matched = sum(1 for r in rows if r["reconciliation_status"] == "matched")
-    rate = round(100.0 * matched / len(rows), 2) if rows else 0
-    cases.append(("reconciliation rate, last 6 months", plan, rate, len(rows)))
+    dr = period("last_month")
+    plan = FinanceQueryPlan(intent=Intent.TRANSACTION_LOOKUP, entity_id=ENTITY, date_range=dr,
+                            max_amount=500, limit=1000)
+    rows = py_filter(MINE, dr=dr, max_amount=500)
+    cq, res = run(ch, plan)
+    got_ids = {r["transaction_id"] for r in res.rows}
+    total = int(res.rows[0]["total_matches"]) if res.rows else 0
+    check("transaction_lookup <=500 last month: total_matches", total == len(rows),
+          f"python {len(rows)} vs clickhouse {total}")
+    exp_ids = {t.transaction_id for t in rows}
+    check("transaction_lookup <=500 last month: row ids",
+          got_ids == exp_ids if len(rows) <= 1000 else got_ids <= exp_ids and len(got_ids) == 1000,
+          f"{len(got_ids ^ exp_ids)} ids differ")
+    check("transaction_lookup rows carry no plaintext utr or account number",
+          all("utr_number" not in r and "account_number" not in r
+              and "account_number_enc" not in r for r in res.rows))
 
-    dr5 = resolve(DateRange(relative="last_month"), CAL)
-    plan = FinanceQueryPlan(intent=Intent.VENDOR_PAYOUTS, vendor_name="Globex Software",
-                            vendor_id="V1005", date_range=dr5, metric=Metric.SUM)
-    prows = py_filter(PAYOUTS, date_col="payout_date", start=dr5.resolved_start,
-                      end=dr5.resolved_end, vendor="V1005")
-    cases.append(("Globex payouts, last month", plan,
-                  sum(float(r["amount"]) for r in prows), len(prows)))
+    dr = period("last_90_days")
+    plan = FinanceQueryPlan(intent=Intent.TRANSACTION_LOOKUP, entity_id=ENTITY, date_range=dr,
+                            min_amount=1000, max_amount=2000, transaction_type=TransactionType.DEBIT,
+                            limit=1000)
+    rows = py_filter(MINE, dr=dr, min_amount=1000, max_amount=2000, txn_type="debit")
+    cq, res = run(ch, plan)
+    total = int(res.rows[0]["total_matches"]) if res.rows else 0
+    check("transaction_lookup between 1000 and 2000, last 90 days, debits",
+          total == len(rows) and all(1000 <= float(r["transaction_amount"]) <= 2000 for r in res.rows),
+          f"python {len(rows)} vs clickhouse {total}")
 
-    for label, plan, expected_value, expected_count in cases:
-        cq = compile_plan(plan)
-        res = ch.query(cq.sql, cq.params)
-        if cq.kind == "detail":
-            got_value, got_count = None, len(res.rows)
-        else:
-            got_value = res.rows[0].get("value") if res.rows else 0
-            got_count = int(res.rows[0].get("record_count", 0)) if res.rows else 0
+    dr = period("this_year")
+    plan = FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, entity_id=ENTITY, date_range=dr,
+                            channel=Channel.UPI)
+    rows = py_filter(MINE, dr=dr, channel="UPI", txn_type="debit")
+    aggregate_case(ch, "spend_summary UPI debits, this year", plan, rows,
+                   sum(t.amount for t in rows))
 
-        ok_count = got_count == expected_count
-        ok_value = expected_value is None or approx(got_value, expected_value)
-        status = "PASS" if (ok_count and ok_value) else "FAIL"
-        if status == "FAIL":
-            failures += 1
-        val_str = "-" if expected_value is None else f"{float(expected_value):,.2f}"
-        got_str = "-" if got_value is None else f"{float(got_value):,.2f}"
-        print(f"[{status}] {label}")
-        print(f"        python: value={val_str:>18}  rows={expected_count:>5}")
-        print(f"        clickh: value={got_str:>18}  rows={got_count:>5}  ({res.duration_ms}ms)")
-        if status == "FAIL":
-            print(f"        SQL: {cq.sql}\n        PARAMS: {cq.params}")
+    dr = period("last_quarter")
+    plan = FinanceQueryPlan(intent=Intent.LARGEST_TRANSACTIONS, entity_id=ENTITY, date_range=dr,
+                            limit=10)
+    rows = sorted(py_filter(MINE, dr=dr, txn_type="debit"),
+                  key=lambda t: (-t.amount, t.transaction_id))[:10]
+    cq, res = run(ch, plan)
+    got = [r["transaction_id"] for r in res.rows]
+    check("largest_transactions top 10 ordering, last quarter",
+          got == [t.transaction_id for t in rows],
+          f"python {[t.amount for t in rows]}\n        clickhouse "
+          f"{[r['transaction_amount'] for r in res.rows]}")
 
-    dr6 = resolve(DateRange(relative="last_month"), CAL)
-    gplan = FinanceQueryPlan(intent=Intent.TOP_VENDORS, date_range=dr6,
-                             metric=Metric.SUM, group_by=GroupBy.VENDOR, limit=100)
-    gq = compile_plan(gplan)
-    grouped = ch.query(gq.sql, gq.params)
-    tplan = FinanceQueryPlan(intent=Intent.TOTAL_SPEND, date_range=dr6, metric=Metric.SUM)
-    tq = compile_plan(tplan)
-    total = float(ch.query(tq.sql, tq.params).rows[0]["value"])
-    bsum = sum(float(r["value"]) for r in grouped.rows)
-    ok = approx(bsum, total, tol=0.05)
-    failures += 0 if ok else 1
-    print(f"[{'PASS' if ok else 'FAIL'}] breakdown sums to aggregate")
-    print(f"        breakdown({len(grouped.rows)} vendors): {bsum:,.2f}   aggregate: {total:,.2f}")
+    plan = FinanceQueryPlan(intent=Intent.TOP_COUNTERPARTIES, entity_id=ENTITY, date_range=dr,
+                            limit=10)
+    sums: dict[str, float] = defaultdict(float)
+    counts: dict[str, int] = defaultdict(int)
+    for t in py_filter(MINE, dr=dr, txn_type="debit"):
+        sums[t.counterparty] += t.amount
+        counts[t.counterparty] += 1
+    top = sorted(sums.items(), key=lambda kv: -kv[1])[:10]
+    cq, res = run(ch, plan)
+    got_top = [(r["counterparty"], float(r["value"]), int(r["record_count"])) for r in res.rows]
+    ok = len(got_top) == len(top) and all(
+        g[0] == e[0] and approx(g[1], e[1]) and g[2] == counts[e[0]] for g, e in zip(got_top, top, strict=True))
+    check("top_counterparties sum, last quarter", ok, f"python {top[:3]}\n        clickhouse {got_top[:3]}")
 
-    print(f"\n{len(cases) + 1 - failures}/{len(cases) + 1} checks passed")
-    return 1 if failures else 0
+    dr = period("this_year")
+    plan = FinanceQueryPlan(intent=Intent.CHANNEL_BREAKDOWN, entity_id=ENTITY, date_range=dr,
+                            transaction_type=TransactionType.DEBIT)
+    by_channel: dict[str, float] = defaultdict(float)
+    for t in py_filter(MINE, dr=dr, txn_type="debit"):
+        by_channel[t.channel] += t.amount
+    cq, res = run(ch, plan)
+    got_ch = {r["channel"]: float(r["value"]) for r in res.rows}
+    ok = set(got_ch) == set(by_channel) and all(approx(got_ch[k], v) for k, v in by_channel.items())
+    check("channel_breakdown debits, this year", ok, f"python {dict(by_channel)}\n        clickhouse {got_ch}")
+
+    plan = FinanceQueryPlan(intent=Intent.TREND, entity_id=ENTITY, date_range=dr,
+                            group_by=GroupBy.MONTH, transaction_type=TransactionType.DEBIT)
+    by_month: dict[str, float] = defaultdict(float)
+    for t in py_filter(MINE, dr=dr, txn_type="debit"):
+        by_month[t.txn_date.replace(day=1).isoformat()] += t.amount
+    cq, res = run(ch, plan)
+    got_m = {str(r["month"])[:10]: float(r["value"]) for r in res.rows}
+    ok = (list(got_m) == sorted(by_month) and all(approx(got_m[k], v) for k, v in by_month.items()))
+    check("trend by month debits, this year (chronological)", ok,
+          f"python {dict(sorted(by_month.items()))}\n        clickhouse {got_m}")
+
+    plan = FinanceQueryPlan(intent=Intent.BALANCE, entity_id=ENTITY, limit=1000)
+    accts = [a for a in ACCOUNTS.values() if a["entity_id"] == ENTITY]
+    cq, res = run(ch, plan)
+    got_bal = {r["account_id"]: float(r["available_balance"]) for r in res.rows}
+    exp_bal = {a["account_id"]: float(a["available_balance"]) for a in accts}
+    ok = set(got_bal) == set(exp_bal) and all(approx(got_bal[k], v) for k, v in exp_bal.items())
+    check("balance from account table matches account.csv", ok,
+          f"python {len(exp_bal)} accounts {sum(exp_bal.values()):,.2f}; "
+          f"clickhouse {len(got_bal)} accounts {sum(got_bal.values()):,.2f}")
+    check("balance rows carry last4 only, never account_number_enc",
+          all("account_number_enc" not in r and "account_number" not in r for r in res.rows))
+
+    target = next(t for t in MINE if t.reference)
+    plan = FinanceQueryPlan(intent=Intent.REFERENCE_LOOKUP, entity_id=ENTITY,
+                            reference=target.reference, reference_kind=ReferenceKind.REFERENCE)
+    exp = [t for t in MINE if t.reference == target.reference]
+    cq, res = run(ch, plan)
+    check("reference_lookup by transaction_reference_id",
+          {r["transaction_id"] for r in res.rows} == {t.transaction_id for t in exp},
+          f"expected {[t.transaction_id for t in exp]}, got {[r['transaction_id'] for r in res.rows]}")
+
+    cipher = FieldCipher(load_key(data_key()))
+    target = next(t for t in MINE if t.utr)
+    plan = FinanceQueryPlan(intent=Intent.REFERENCE_LOOKUP, entity_id=ENTITY,
+                            reference=target.utr.lower(), reference_kind=ReferenceKind.UTR)
+    exp = [t for t in MINE if t.utr == target.utr]
+    cq, res = run(ch, plan, utr_hash=cipher.blind_index(target.utr.lower()))
+    check("utr lookup via blind_index finds the row",
+          {r["transaction_id"] for r in res.rows} == {t.transaction_id for t in exp},
+          f"expected {[t.transaction_id for t in exp]}, got {[r['transaction_id'] for r in res.rows]}")
+    check("utr lookup: plaintext never bound as a parameter",
+          target.utr not in cq.params.values() and target.utr not in cq.sql)
+    check("utr lookup: stored utr_enc decrypts to the CSV plaintext",
+          bool(res.rows) and all(cipher.decrypt(r["utr_enc"]) == target.utr for r in res.rows))
+
+    print(f"\n{checks - len(failures)}/{checks} checks passed")
+    if failures:
+        for f in failures:
+            print(f"  FAIL: {f.splitlines()[0]}")
+        return 1
+    print("CROSSCHECK_PASS")
+    return 0
 
 
 if __name__ == "__main__":

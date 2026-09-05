@@ -27,7 +27,7 @@ Return:
 The only permitted values for `date_range.relative` are:
 last_month, this_month, month_before_last, last_quarter, this_quarter,
 last_year, this_year, last_7_days, last_30_days, last_90_days,
-last_6_months, last_12_months, all_time
+last_6_months, last_12_months, today, yesterday, all_time
 
 Never invent a value outside that list. There is no "two_months_ago".
 
@@ -50,9 +50,12 @@ reverse.
 
 ### Other rules
 
-- "And for Globex?" changes only `vendor_name`.
-- "Break that down by category" changes only `group_by`.
-- "Across all vendors" puts "vendor_name" in `clear`.
+- "And for Zomato?" changes only `counterparty_name`.
+- "Break that down by channel" changes only `group_by`.
+- "Across everyone" puts "counterparty_name" in `clear`.
+- "Only the ones above 1000" changes only `min_amount`; "under 500" only `max_amount`.
+- "Just the credits" changes only `transaction_type`.
+- "Show me those transactions" changes `intent` to transaction_lookup and keeps every filter.
 - The delta MUST differ from the previous plan. Returning the previous plan
   unchanged is never a valid answer to a follow-up question.
 - If the follow-up is actually a new, unrelated question, return the full set of

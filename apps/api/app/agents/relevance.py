@@ -13,15 +13,15 @@ from .context import DatasetContext
 MONEY = {
     "spend", "spent", "spending", "cost", "costs", "pay", "paid", "payment", "payments",
     "payout", "payouts", "expense", "expenses", "amount", "total", "totals", "sum",
-    "invoice", "invoices", "bill", "bills", "vendor", "vendors", "supplier", "suppliers",
-    "transaction", "transactions", "reconcile", "reconciled", "reconciliation",
-    "unreconciled", "unmatched", "matched", "disputed", "pending", "category",
-    "categories", "account", "accounts", "ledger", "outstanding", "balance", "revenue",
-    "budget", "gst", "tax", "vat", "fee", "fees", "charge", "charges", "refund",
-    "purchase", "purchases", "procurement", "spent", "money", "cash", "rupee", "rupees",
-    "dollar", "dollars", "inr", "usd", "trend", "breakdown", "compare", "comparison",
-    "top", "largest", "biggest", "highest", "lowest", "average", "count", "how many",
-    "how much", "anomaly", "unusual", "report", "export",
+    "bill", "bills", "transaction", "transactions", "txn", "txns", "sent", "received",
+    "credit", "credits", "credited", "debit", "debits", "debited", "transfer", "transfers",
+    "account", "accounts", "balance", "balances", "bank", "banks", "upi", "neft", "imps",
+    "rtgs", "cheque", "utr", "ref", "reference", "narration", "statement", "gst", "tax",
+    "fee", "fees", "charge", "charges", "refund", "interest", "purchase", "purchases",
+    "money", "cash", "rupee", "rupees", "rs", "inr", "lakh", "lakhs", "crore", "trend",
+    "breakdown", "compare", "comparison", "top", "largest", "biggest", "highest", "lowest",
+    "smallest", "average", "count", "list", "show", "who", "anomaly", "unusual", "report",
+    "export", "under", "below", "above", "over", "between", "less", "more", "than",
 }
 PERIOD = {
     "month", "months", "monthly", "quarter", "quarters", "quarterly", "year", "years",
@@ -32,7 +32,8 @@ PERIOD = {
     "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "q1", "q2", "q3", "q4",
 }
 FOLLOWUP = {"what about", "and for", "break that", "break it", "same for", "compare that",
-            "how about", "the month before", "by category", "by vendor", "by month"}
+            "how about", "the month before", "by channel", "by account", "by month",
+            "by bank", "only the", "just the", "show me those", "list them"}
 
 _WORD = re.compile(r"[a-z][a-z']*")
 
@@ -44,7 +45,7 @@ class Relevance:
 
     @property
     def reason(self) -> str:
-        return ("no reference to spend, vendors, payouts, reconciliation, or a period"
+        return ("no reference to transactions, counterparties, accounts, amounts, or a period"
                 if not self.relevant else ", ".join(self.signals[:4]))
 
 
@@ -62,16 +63,14 @@ def assess(question: str, ctx: DatasetContext, has_previous: bool) -> Relevance:
         signals.append("period")
     if re.search(r"[₹$€£]|\b\d{2,}\b", q):
         signals.append("figure")
-    for v in ctx.vendors:
-        name = v.vendor_name.lower()
-        first = name.split()[0]
-        if name in q or (len(first) >= 4 and first in words):
-            signals.append(f"vendor:{v.vendor_name}")
+    for c in ctx.counterparties[:2000]:
+        name = c.name.lower()
+        first = name.split()[0] if name else ""
+        if name and (name in q or (len(first) >= 4 and first in words)):
+            signals.append(f"counterparty:{c.name}")
             break
-    for c in ctx.categories:
-        if c.lower() in q:
-            signals.append(f"category:{c}")
-            break
+    if re.search(r"\b[A-Z]{4,6}[A-Z0-9]{6,}\b|\b\d{9,}\b", question):
+        signals.append("reference")
     if has_previous and any(f in q for f in FOLLOWUP):
         signals.append("follow-up")
 

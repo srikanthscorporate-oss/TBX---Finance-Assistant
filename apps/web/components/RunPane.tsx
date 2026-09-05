@@ -30,7 +30,8 @@ function Idle({ dataset }: { dataset: DatasetInfo | null }) {
       {dataset && (
         <dl className="mt-2 grid w-full max-w-[300px] grid-cols-2 gap-x-4 gap-y-1.5 border-t border-line pt-3 text-left">
           {[['Dataset', dataset.dataset_version], ['Coverage', `${dataset.min_date} to ${dataset.max_date}`],
-            ['Vendors', String(dataset.vendor_count)], ['Currency', dataset.currency]].map(([k, v]) => (
+            ['Accounts', String(dataset.account_count)], ['Counterparties', String(dataset.counterparty_count)],
+            ['Banks', String(Object.keys(dataset.banks ?? {}).length)], ['Currency', dataset.currency]].map(([k, v]) => (
             <div key={k} className="contents">
               <dt className="text-[11px] text-muted">{k}</dt>
               <dd className="num truncate font-mono text-[11px] text-ink-2" title={v}>{v}</dd>
@@ -52,19 +53,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 function Visuals({ ev, chartHint, exportHref }: { ev: Evidence; chartHint?: string | null; exportHref: string }) {
-  const facts = Object.fromEntries(ev.facts.map(f => [f.key, f]));
   const rows = ev.breakdown;
   const blocks: React.ReactNode[] = [];
-
-  if (facts.rate && facts.matched && facts.unmatched) {
-    blocks.push(
-      <div key="recon" className="rounded border border-line p-3.5">
-        <p className="mb-2 text-[12px] text-ink-2">Reconciliation status</p>
-        <RingChart status centre={facts.rate.formatted} sub="matched"
-          parts={[{ label: 'Matched', value: Number(facts.matched.value) },
-                  { label: 'Not matched', value: Number(facts.unmatched.value) }]} />
-      </div>);
-  }
 
   if (rows.length > 1) {
     const isTime = chartHint === 'line';
@@ -104,7 +94,7 @@ export default function RunPane({ turn, dataset }: { turn: Turn | null; dataset:
   const res = turn.response;
   const ev = res?.evidence;
   const stages = buildStages(turn.events, turn.running);
-  const headline = ev?.facts.find(f => ['total', 'shown_total', 'count', 'rate'].includes(f.key));
+  const headline = ev?.facts.find(f => ['total', 'balance_total', 'amount', 'shown_total', 'count'].includes(f.key));
   const meta = res && res.state !== 'answer' ? NON_ANSWER[res.state] : null;
 
   const calls = res?.model_usage ?? [];
@@ -115,14 +105,20 @@ export default function RunPane({ turn, dataset }: { turn: Turn | null; dataset:
   const tokens = calls.reduce((a, u) => a + u.prompt_tokens + u.completion_tokens, 0);
   const switched = calls.some(u => ['alternate', 'fallback', 'regional'].includes(u.tier) && u.ok);
 
+  const plan = res?.plan;
   const exportHref = exportUrl({
-    intent: String(res?.plan?.intent ?? 'total_spend'),
-    group_by: String(res?.plan?.group_by ?? 'vendor'),
-    metric: String(res?.plan?.metric ?? 'sum'),
-    relative: (res?.plan?.date_range as { relative?: string })?.relative,
-    vendor_id: res?.plan?.vendor_id as string | undefined,
-    category: res?.plan?.category as string | undefined,
+    intent: plan?.intent ?? 'spend_summary',
+    group_by: plan?.group_by ?? 'counterparty',
+    metric: plan?.metric ?? 'sum',
+    relative: plan?.date_range?.relative ?? undefined,
+    entity_id: plan?.entity_id ?? undefined,
+    counterparty: plan?.counterparty ?? undefined,
+    channel: plan?.channel ?? undefined,
+    transaction_type: plan?.transaction_type ?? undefined,
   });
+  const scope = ev ? (['counterparty', 'account', 'bank', 'channel'] as const)
+    .filter(k => ev.entities_resolved[k])
+    .map(k => k === 'account' ? `account ${ev.entities_resolved[k]}` : ev.entities_resolved[k]) : [];
 
   return (
     <div className="flex h-full flex-col">
@@ -149,15 +145,17 @@ export default function RunPane({ turn, dataset }: { turn: Turn | null; dataset:
           <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
             <div>
               <p className="text-[11px] uppercase tracking-wide text-muted">
-                {ev.entities_resolved?.vendor_name
-                  ? `${ev.entities_resolved.vendor_name}, ${ev.resolved_period ?? 'all time'}`
-                  : (ev.resolved_period ?? 'All time')}
+                {scope.length
+                  ? `${scope.join(', ')}, ${ev.resolved_period ?? (headline.key === 'balance_total' ? 'current' : 'all time')}`
+                  : (ev.resolved_period ?? (headline.key === 'balance_total' ? 'Current balance' : 'All time'))}
               </p>
               <p className="num mt-1 font-mono text-[34px] leading-none tracking-tight">{headline.formatted}</p>
               <p className="mt-1.5 text-[11.5px] text-muted">
                 {headline.key === 'shown_total'
-                  ? 'Combined value of the groups shown, limited by the row cap.'
-                  : `Computed across ${ev.total_record_count.toLocaleString()} records.`}
+                  ? 'Combined value of the rows shown, limited by the row cap.'
+                  : headline.key === 'balance_total'
+                    ? `Available balance across ${ev.total_record_count.toLocaleString()} account${ev.total_record_count === 1 ? '' : 's'}.`
+                    : `Computed across ${ev.total_record_count.toLocaleString()} transactions.`}
               </p>
             </div>
             {ev.confidence && (
@@ -183,8 +181,12 @@ export default function RunPane({ turn, dataset }: { turn: Turn | null; dataset:
         {ev && (
           <Section title="Visuals">
             <Visuals ev={ev} chartHint={res?.chart_hint} exportHref={exportHref} />
-            {!ev.breakdown.length && !ev.facts.find(f => f.key === 'rate') && (
-              <p className="text-[11.5px] text-muted">A single figure. Ask for a breakdown or a trend to see it charted.</p>
+            {!ev.breakdown.length && (
+              <p className="text-[11.5px] text-muted">
+                {ev.records.length
+                  ? 'Individual transactions are listed under Evidence. Ask for a breakdown by counterparty, channel or month to see a chart.'
+                  : 'A single figure. Ask for a breakdown or a trend to see it charted.'}
+              </p>
             )}
           </Section>
         )}
@@ -200,7 +202,7 @@ export default function RunPane({ turn, dataset }: { turn: Turn | null; dataset:
               <CaretRight size={11} weight="bold" aria-hidden className={`transition-transform ${showEvidence ? 'rotate-90' : ''}`} />
               Evidence
               <span className="normal-case tracking-normal">
-                {ev.verification.checks.filter(c => c.passed).length} of {ev.verification.checks.length} checks, SQL, source rows
+                {ev.verification.checks.filter(c => c.passed).length} of {ev.verification.checks.length} checks, facts, SQL{ev.records.length ? `, ${ev.records.length} records` : ''}
               </span>
             </button>
             {showEvidence && <EvidencePanel evidence={ev} />}

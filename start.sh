@@ -106,8 +106,8 @@ else
   HOSTROOT="$ROOT"
 fi
 
-say "starting ClickHouse, Postgres, Redis"
-docker compose up -d clickhouse postgres redis
+say "starting ClickHouse, MySQL, Redis"
+docker compose up -d clickhouse mysql redis
 say "waiting for ClickHouse"
 for _ in $(seq 1 60); do
   docker compose exec -T clickhouse wget -qO- http://127.0.0.1:8123/ping 2>/dev/null | grep -q Ok && break
@@ -117,17 +117,19 @@ docker compose exec -T clickhouse wget -qO- http://127.0.0.1:8123/ping 2>/dev/nu
 
 # Dataset scripts run in a container on the compose network; the host needs no Python.
 NET="$(docker network ls --format '{{.Name}}' | grep -E '_data$' | head -1)"
-PYRUN() { docker run --rm --network "$NET" -v "${HOSTROOT}:/w" -w /w python:3.12-slim python "$@"; }
+PYRUN() { docker run --rm --network "$NET" -e TBX_DATA_KEY -v "${HOSTROOT}:/w" -w /w python:3.12-slim sh -c 'pip install -q "cryptography>=43" >/dev/null && exec python "$@"' -- "$@"; }
 
-if [ ! -f data/raw/transactions.csv ]; then
+if [ ! -f data/raw/transaction.csv ]; then
   say "no dataset in data/raw; generating a stand-in"
-  PYRUN scripts/generate_synthetic_dataset.py --out data/raw
+  PYRUN scripts/generate_bank_dataset.py --out data/raw
 fi
 CH_USER="$(grep -E '^CH_ADMIN_USER=' .env | cut -d= -f2)"; CH_PASS="$(grep -E '^CH_ADMIN_PASSWORD=' .env | cut -d= -f2)"
-ROWS="$(docker compose exec -T clickhouse clickhouse-client --user "${CH_USER:-tbx_admin}" --password "${CH_PASS:-change-me-admin}" -q 'SELECT count() FROM tbx_finance.transactions' 2>/dev/null || echo 0)"
+ROWS="$(docker compose exec -T clickhouse clickhouse-client --user "${CH_USER:-tbx_admin}" --password "${CH_PASS:-change-me-admin}" -q 'SELECT count() FROM tbx_finance.transaction' 2>/dev/null || echo 0)"
 if [ "${ROWS:-0}" -eq 0 ]; then
   say "loading the dataset into ClickHouse"
-  PYRUN scripts/load_dataset.py --raw data/raw --url http://clickhouse:8123 --user "${CH_USER:-tbx_admin}" --password "${CH_PASS:-change-me-admin}"
+  DATA_KEY="$(grep -E '^TBX_DATA_KEY=' .env | cut -d= -f2)"
+  [ -n "$DATA_KEY" ] || die "TBX_DATA_KEY missing from .env; generate one with: python3 -c 'import os;print(os.urandom(32).hex())'"
+  TBX_DATA_KEY="$DATA_KEY" PYRUN scripts/load_dataset.py --raw data/raw --url http://clickhouse:8123 --user "${CH_USER:-tbx_admin}" --password "${CH_PASS:-change-me-admin}"
 else
   say "dataset already loaded (${ROWS} transactions)"
 fi

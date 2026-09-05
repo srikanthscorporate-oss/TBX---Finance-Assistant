@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .api.v1 import admin, chat, data, models
+from .api.v1 import admin, chat, data, models, sources
 from .config.settings import settings
 from .state import app_state, startup
 
@@ -95,6 +95,7 @@ app.include_router(chat.router)
 app.include_router(data.router)
 app.include_router(admin.router)
 app.include_router(models.router)
+app.include_router(sources.router)
 
 
 @app.get("/health")
@@ -110,7 +111,9 @@ async def health():
         "dataset_window": (
             f"{app_state.ctx.calendar.min_date}..{app_state.ctx.calendar.max_date}"
             if app_state.ctx else None),
-        "vendors": len(app_state.ctx.vendors) if app_state.ctx else 0,
+        "counterparties": len(app_state.ctx.counterparties) if app_state.ctx else 0,
+        "accounts": len(app_state.ctx.accounts) if app_state.ctx else 0,
         "planner": "stub" if os.getenv("TBX_USE_STUB_LLM") == "1" else "model",
+        "source": f"mysql:{app_state.source.database}" if app_state.source else "bundled",
     }
     return JSONResponse(body, status_code=200 if ready else 503)

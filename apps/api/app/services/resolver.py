@@ -1,5 +1,5 @@
-"""Deterministic vendor resolution by normalisation and string similarity in
-Python; ambiguity becomes CLARIFICATION_REQUIRED."""
+"""Deterministic counterparty and account resolution by normalisation and string
+similarity in Python; ambiguity becomes CLARIFICATION_REQUIRED."""
 from __future__ import annotations
 
 import unicodedata
@@ -22,17 +22,32 @@ AMBIGUITY_MARGIN = 0.08
 
 
 @dataclass(frozen=True)
-class VendorRecord:
-    vendor_id: str
-    vendor_name: str
-    legal_name: str = ""
-    category: str = ""
-    status: str = "active"
+class CounterpartyRecord:
+    """One distinct stored counterparty. `entities` lists who has transacted with it."""
+    name: str
+    txn_count: int = 0
+    channel: str = ""
+    entities: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class AccountRecord:
+    account_id: str
+    entity_id: str
+    last4: str
+    bank_code: str
+    bank_name: str = ""
+    program_id: int = 0
+    available_balance: float = 0.0
+
+    @property
+    def masked(self) -> str:
+        return f"XXXXXX{self.last4}"
 
 
 @dataclass
 class Candidate:
-    record: VendorRecord
+    record: CounterpartyRecord
     score: float
 
 
@@ -43,7 +58,7 @@ class Resolution:
     candidates: list[Candidate]
 
     @property
-    def best(self) -> VendorRecord | None:
+    def best(self) -> CounterpartyRecord | None:
         return self.candidates[0].record if self.candidates else None
 
     @property
@@ -107,27 +122,31 @@ def _similarity(query: str, target: str) -> float:
     return max(ratio, overlap, prefix, _alignment(query, target))
 
 
-def resolve_vendor(query: str, vendors: list[VendorRecord]) -> Resolution:
-    """A single exact normalised hit wins; several close fuzzy hits are ambiguous."""
+def resolve_counterparty(query: str, counterparties: list[CounterpartyRecord]) -> Resolution:
+    """A single exact normalised hit wins; several close fuzzy hits are ambiguous.
+
+    "Swiggy" against SWIGGY and SWIGGY INSTAMART is the canonical ambiguous case and
+    yields both as options rather than a guess.
+    """
     q = normalize(query)
     if not q:
         return Resolution(MatchKind.NOT_FOUND, query, [])
 
     scored: list[Candidate] = []
-    for v in vendors:
-        score = max(
-            _similarity(q, normalize(v.vendor_name)),
-            _similarity(q, normalize(v.legal_name)) * 0.98 if v.legal_name else 0.0,
-        )
+    for v in counterparties:
+        score = _similarity(q, normalize(v.name))
         if score >= MIN_ACCEPT:
             scored.append(Candidate(record=v, score=round(score, 4)))
 
-    scored.sort(key=lambda c: (-c.score, c.record.vendor_name))
+    scored.sort(key=lambda c: (-c.score, -c.record.txn_count, c.record.name))
 
     if not scored:
         return Resolution(MatchKind.NOT_FOUND, query, [])
 
-    exact = [c for c in scored if normalize(c.record.vendor_name) == q]
+    exact = [c for c in scored if normalize(c.record.name) == q]
+    prefixed = [c for c in scored if normalize(c.record.name).startswith(q + " ")]
+    if len(exact) == 1 and prefixed:
+        return Resolution(MatchKind.AMBIGUOUS, query, exact + prefixed[:7])
     if len(exact) == 1:
         return Resolution(MatchKind.EXACT, query, exact)
     if len(exact) > 1:
@@ -143,7 +162,18 @@ def resolve_vendor(query: str, vendors: list[VendorRecord]) -> Resolution:
     return Resolution(MatchKind.UNIQUE_FUZZY, query, scored[:1])
 
 
-def resolve_category(query: str, categories: list[str]) -> Resolution:
-    """Same policy, applied to spend categories."""
-    fake = [VendorRecord(vendor_id=c, vendor_name=c) for c in categories]
-    return resolve_vendor(query, fake)
+@dataclass
+class AccountResolution:
+    kind: MatchKind
+    matches: list[AccountRecord]
+
+
+def resolve_account(last4: str, accounts: list[AccountRecord]) -> AccountResolution:
+    """Accounts are named by their last four digits; two accounts sharing them is
+    ambiguous and asks, showing the bank as the hint."""
+    hits = [a for a in accounts if a.last4 == last4]
+    if not hits:
+        return AccountResolution(MatchKind.NOT_FOUND, [])
+    if len(hits) == 1:
+        return AccountResolution(MatchKind.EXACT, hits)
+    return AccountResolution(MatchKind.AMBIGUOUS, hits)

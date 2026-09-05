@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..contracts.enums import Intent
+from ..contracts.enums import Channel, Intent
 from ..contracts.events import EventType
 from ..contracts.plan import FinanceQueryPlan, PlanDelta
 from ..llm.router import AllModelsRateLimited, ModelRouter, ModelSpec, Tier, extract_json
@@ -17,7 +17,7 @@ from .context import ConversationState, DatasetContext, RunContext
 RELATIVE_VOCABULARY = (
     "last_month, this_month, month_before_last, last_quarter, this_quarter, "
     "last_year, this_year, last_7_days, last_30_days, last_90_days, "
-    "last_6_months, last_12_months, all_time"
+    "last_6_months, last_12_months, today, yesterday, all_time"
 )
 
 
@@ -107,7 +107,8 @@ class Planner:
                 system,
                 dataset_min=self.ctx.calendar.min_date,
                 dataset_max=self.ctx.calendar.max_date,
-                categories=", ".join(self.ctx.categories),
+                channels=", ".join(c.value for c in Channel),
+                top_counterparties=", ".join(c.name for c in self.ctx.counterparties[:25]),
                 intents=", ".join(i.value for i in Intent),
                 relatives=RELATIVE_VOCABULARY)
         return system, prompts.fill(user_t, question=question)

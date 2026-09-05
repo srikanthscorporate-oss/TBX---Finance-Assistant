@@ -123,8 +123,8 @@ def deterministic_fallback(evidence: EvidencePackage, question: str | None = Non
     parts = [f"{primary.formatted}"]
     if evidence.resolved_period:
         parts.append(f"for {evidence.resolved_period}")
-    if "vendor_name" in evidence.entities_resolved:
-        parts.append(f"({evidence.entities_resolved['vendor_name']})")
+    if "counterparty" in evidence.entities_resolved:
+        parts.append(f"({evidence.entities_resolved['counterparty']})")
     sentence = " ".join(parts) + "."
     if evidence.total_record_count:
         sentence += f" Based on {evidence.total_record_count:,} records."
@@ -155,29 +155,48 @@ def template_answer(evidence: EvidencePackage, intent: str) -> ComposedAnswer | 
     f = evidence.fact_map()
     ent = evidence.entities_resolved
     period = evidence.resolved_period
-    vendor = ent.get("vendor_name")
-    category = ent.get("category")
+    cp = ent.get("counterparty")
+    acct = ent.get("account")
     n = evidence.total_record_count
     when = f" in {period}" if period else ""
+    where = f" from account {acct}" if acct else ""
     recs = f"across {n:,} transactions" if n else "with no matching transactions"
+    kind = "received" if ent.get("transaction_type") == "credit" else "spent"
 
     text: str | None = None
-    if intent == "vendor_spend" and "total" in f and vendor:
-        text = f"You spent {f['total'].formatted} with {vendor}{when}, {recs}."
-    elif intent == "category_spend" and "total" in f and category:
-        text = f"{category} spend{when} came to {f['total'].formatted}, {recs}."
-    elif intent in {"total_spend", "account_spend"} and "total" in f:
-        text = f"Total spend{when} was {f['total'].formatted}, {recs}."
-    elif intent == "vendor_payouts" and "total" in f:
-        who = f" to {vendor}" if vendor else ""
-        text = f"Payouts{who}{when} totalled {f['total'].formatted}, {recs.replace('transactions', 'payouts')}."
-    elif intent == "reconciliation_rate" and "rate" in f:
-        extra = ""
-        if "matched" in f and "unmatched" in f:
-            extra = f" ({f['matched'].formatted} matched, {f['unmatched'].formatted} not)"
-        text = f"{f['rate'].formatted} of transactions{when} are reconciled{extra}."
-    elif intent == "unreconciled" and "count" in f:
-        text = f"There are {f['count'].formatted} unreconciled transactions{when}."
+    if intent == "counterparty_spend" and "total" in f and cp:
+        text = f"You {kind} {f['total'].formatted} with {cp}{when}{where}, {recs}."
+    elif intent == "counterparty_spend" and "count" in f and cp:
+        text = f"You made {f['count'].formatted} transactions with {cp}{when}{where}."
+    elif intent in {"spend_summary", "account_summary"} and "total" in f:
+        text = f"Total {kind}{when}{where} was {f['total'].formatted}, {recs}."
+    elif intent == "reference_lookup" and "count" in f:
+        ref = ent.get("reference", "that reference")
+        label = "UTR" if ent.get("reference_kind") == "utr" else "Reference"
+        if int(f["count"].value) == 1:
+            r = evidence.records[0] if evidence.records else {}
+            text = (f"{label} {ref} is a {r.get('transaction_type', '')} of "
+                    f"{r.get('amount_formatted', '')} on {r.get('transaction_date', '')} "
+                    f"to {r.get('counterparty') or 'an unnamed counterparty'} via {r.get('channel', '')}, "
+                    f"from account {r.get('account', '')}.")
+        else:
+            text = f"{f['count'].formatted} transactions match {label.lower()} {ref}."
+    elif intent == "balance" and "balance_total" in f:
+        text = f"Your available balance is {f['balance_total'].formatted} across {f['count'].formatted} accounts."
+    elif intent == "largest_transactions" and evidence.records:
+        r0 = evidence.records[0]
+        n = len(evidence.records)
+        what = "credits" if ent.get("transaction_type") == "credit" else "debits"
+        biggest = (f"the biggest was {r0.get('amount_formatted')} to {r0.get('counterparty') or 'an unnamed counterparty'} "
+                   f"on {str(r0.get('transaction_date', ''))[:10]}")
+        text = f"Your {n} largest {what}{when}{where} total {f['shown_total' if 'shown_total' in f else 'total'].formatted}; {biggest}."
+    elif intent == "transaction_lookup" and "count" in f:
+        shown = f.get("shown_count")
+        if shown:
+            text = (f"{f['count'].formatted} transactions match{when}{where}; the first "
+                    f"{shown.formatted} are listed, totalling {f['shown_total'].formatted}.")
+        else:
+            text = f"{f['count'].formatted} transactions match{when}{where}, totalling {f['total'].formatted}."
     elif "count" in f:
         text = f"{f['count'].formatted} records match{when}."
     elif "total" in f:

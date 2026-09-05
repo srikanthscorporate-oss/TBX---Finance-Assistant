@@ -2,12 +2,13 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { ChartLineUp, ChatCircleDots } from '@phosphor-icons/react';
+import { ChartLineUp, ChatCircleDots, Plugs } from '@phosphor-icons/react';
 import ThemeToggle from './ThemeToggle';
 
 const NAV = [
   { href: '/', label: 'Ask', Icon: ChatCircleDots },
   { href: '/observability', label: 'Observability', Icon: ChartLineUp },
+  { href: '/datasource', label: 'Data Source', Icon: Plugs },
 ];
 
 export default function Shell({ children, meta }: {

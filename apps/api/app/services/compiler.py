@@ -2,33 +2,35 @@
 
 Identifiers come only from the allowlists in this module and every plan-derived
 value is a bound ClickHouse parameter. Nothing from the plan is concatenated
-into the SQL body; add an allowlist entry instead.
+into the SQL body; add an allowlist entry instead. Encrypted columns are selected
+as ciphertext and decrypted by the evidence builder; the key never enters SQL.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..contracts.enums import Direction, GroupBy, Intent, Metric, ReconStatus, TxnStatus
+from ..contracts.enums import GroupBy, Intent, Metric, ReferenceKind
 from ..contracts.plan import FinanceQueryPlan
 
 DB = "tbx_finance"
 MAX_LIMIT = 1000
 
 _GROUP_BY_SQL: dict[GroupBy, tuple[str, str]] = {
-    GroupBy.VENDOR: ("t.vendor_id", "vendor_id"),
-    GroupBy.CATEGORY: ("t.category", "category"),
-    GroupBy.ACCOUNT: ("t.account_code", "account_code"),
-    GroupBy.STATUS: ("t.status", "status"),
-    GroupBy.RECON_STATUS: ("t.reconciliation_status", "reconciliation_status"),
-    GroupBy.PAYMENT_METHOD: ("t.payment_method", "payment_method"),
-    GroupBy.DAY: ("toDate(t.txn_date)", "day"),
+    GroupBy.COUNTERPARTY: ("t.counterparty", "counterparty"),
+    GroupBy.ACCOUNT: ("t.account_id", "account_id"),
+    GroupBy.BANK: ("t.bank_code", "bank_code"),
+    GroupBy.CHANNEL: ("t.channel", "channel"),
+    GroupBy.TRANSACTION_TYPE: ("t.transaction_type", "transaction_type"),
+    GroupBy.DAY: ("t.txn_date", "day"),
     GroupBy.WEEK: ("toMonday(t.txn_date)", "week"),
     GroupBy.MONTH: ("toStartOfMonth(t.txn_date)", "month"),
     GroupBy.QUARTER: ("toStartOfQuarter(t.txn_date)", "quarter"),
     GroupBy.YEAR: ("toStartOfYear(t.txn_date)", "year"),
 }
 """GroupBy -> (sql expression, output label column)."""
+
+TIME_GROUPS = {GroupBy.DAY, GroupBy.WEEK, GroupBy.MONTH, GroupBy.QUARTER, GroupBy.YEAR}
 
 _METRIC_SQL: dict[Metric, str] = {
     Metric.SUM: "sum({col})",
@@ -40,51 +42,33 @@ _METRIC_SQL: dict[Metric, str] = {
 }
 
 _INTENT_TABLE: dict[Intent, str] = {
-    Intent.TOTAL_SPEND: "transactions",
-    Intent.VENDOR_SPEND: "transactions",
-    Intent.CATEGORY_SPEND: "transactions",
-    Intent.ACCOUNT_SPEND: "transactions",
-    Intent.TRANSACTION_LOOKUP: "transactions",
-    Intent.UNRECONCILED: "transactions",
-    Intent.RECONCILIATION_RATE: "transactions",
-    Intent.RECONCILIATION_SUMMARY: "transactions",
-    Intent.PERIOD_COMPARISON: "transactions",
-    Intent.TOP_VENDORS: "transactions",
-    Intent.TREND: "transactions",
-    Intent.ANOMALY_SCAN: "transactions",
-    Intent.VENDOR_PAYOUTS: "vendor_payouts",
-    Intent.PAYOUT_STATUS: "vendor_payouts",
-    Intent.VENDOR_LOOKUP: "vendors",
+    Intent.SPEND_SUMMARY: "transaction",
+    Intent.COUNTERPARTY_SPEND: "transaction",
+    Intent.ACCOUNT_SUMMARY: "transaction",
+    Intent.TRANSACTION_LOOKUP: "transaction",
+    Intent.REFERENCE_LOOKUP: "transaction",
+    Intent.LARGEST_TRANSACTIONS: "transaction",
+    Intent.TOP_COUNTERPARTIES: "transaction",
+    Intent.CHANNEL_BREAKDOWN: "transaction",
+    Intent.PERIOD_COMPARISON: "transaction",
+    Intent.TREND: "transaction",
+    Intent.ANOMALY_SCAN: "transaction",
+    Intent.BALANCE: "account",
 }
 """Base table per intent; exhaustive over the closed enum (asserted in tests)."""
 
-_DETAIL_COLUMNS: dict[str, list[str]] = {
-    "transactions": [
-        "transaction_id", "txn_date", "vendor_id", "account_code", "category",
-        "description", "amount", "currency", "direction", "status",
-        "payment_method", "reconciliation_status", "invoice_ref",
-    ],
-    "vendor_payouts": [
-        "payout_id", "payout_date", "vendor_id", "amount", "currency",
-        "status", "method", "invoice_count", "reference",
-    ],
-    "vendors": [
-        "vendor_id", "vendor_name", "legal_name", "category", "status",
-        "country", "currency", "onboarded_at",
-    ],
-}
+TRANSACTION_DETAIL_COLUMNS = [
+    "transaction_id", "account_id", "bank_code", "transaction_date", "transaction_type",
+    "description", "counterparty", "channel", "transaction_amount",
+    "transaction_reference_id", "utr_enc",
+]
+"""utr_enc is ciphertext; the evidence builder decrypts it. account_number is never
+selected from this table because it is not stored here."""
 
-_DATE_COLUMN: dict[str, str] = {
-    "transactions": "txn_date",
-    "vendor_payouts": "payout_date",
-    "vendors": "onboarded_at",
-}
-
-_AMOUNT_COLUMN: dict[str, str] = {
-    "transactions": "amount",
-    "vendor_payouts": "amount",
-    "vendors": "",
-}
+ACCOUNT_DETAIL_COLUMNS = [
+    "account_id", "entity_id", "account_last4", "program_id", "available_balance", "bank_code",
+]
+"""account_number_enc is deliberately absent: a balance answer needs only the last four."""
 
 
 class CompilationError(ValueError):
@@ -102,158 +86,174 @@ class CompiledQuery:
     columns: list[str] = field(default_factory=list)
 
     def display(self) -> dict[str, Any]:
-        """The parameterized SQL and bound parameters for the evidence panel; no
-        inlined SQL string is rendered."""
-        return {"sql": self.sql, "params": {k: str(v) for k, v in self.params.items()}}
+        """The parameterized SQL and bound parameters for the evidence panel. Blind-index
+        parameters are shown truncated so the panel never carries a searchable hash."""
+        shown = {}
+        for k, v in self.params.items():
+            shown[k] = f"{str(v)[:8]}…" if k == "utr_hash" else str(v)
+        return {"sql": self.sql, "params": shown}
 
 
-def compile_plan(plan: FinanceQueryPlan) -> CompiledQuery:
-    """Compile a *validated, date-resolved* plan into parameterized SQL."""
+def compile_plan(plan: FinanceQueryPlan, *, utr_hash: str | None = None) -> CompiledQuery:
+    """Compile a *validated, resolved* plan into parameterized SQL.
+
+    `utr_hash` is the blind index of the user's UTR, computed by the pipeline; the
+    plaintext UTR never becomes a parameter.
+    """
     table = _INTENT_TABLE[plan.intent]
     params: dict[str, Any] = {}
-    where = _build_where(plan, table, params)
 
-    if plan.intent is Intent.RECONCILIATION_RATE:
-        return _compile_recon_rate(plan, where, params)
-    if plan.intent in {Intent.TRANSACTION_LOOKUP, Intent.UNRECONCILED, Intent.VENDOR_LOOKUP}:
-        return _compile_detail(plan, table, where, params)
-    if plan.intent is Intent.TOP_VENDORS:
-        return _compile_grouped(plan, table, where, params, force_group=GroupBy.VENDOR)
+    if table == "account":
+        return _compile_balance(plan, params)
+
+    where = _build_where(plan, params, utr_hash=utr_hash)
+
+    if plan.intent is Intent.LARGEST_TRANSACTIONS:
+        return _compile_detail(plan, where, params, order="t.transaction_amount DESC")
+    if plan.intent in {Intent.TRANSACTION_LOOKUP, Intent.REFERENCE_LOOKUP}:
+        return _compile_detail(plan, where, params, order="t.transaction_date DESC")
+    if plan.intent is Intent.TOP_COUNTERPARTIES:
+        return _compile_grouped(plan, where, params, force_group=GroupBy.COUNTERPARTY)
+    if plan.intent is Intent.CHANNEL_BREAKDOWN:
+        return _compile_grouped(plan, where, params, force_group=GroupBy.CHANNEL)
+    if plan.intent is Intent.ACCOUNT_SUMMARY and plan.group_by is GroupBy.NONE:
+        return _compile_grouped(plan, where, params, force_group=GroupBy.ACCOUNT)
     if plan.intent is Intent.TREND:
-        grain = plan.group_by if plan.group_by in {
-            GroupBy.DAY, GroupBy.WEEK, GroupBy.MONTH, GroupBy.QUARTER, GroupBy.YEAR
-        } else GroupBy.MONTH
-        return _compile_grouped(plan, table, where, params, force_group=grain)
+        grain = plan.group_by if plan.group_by in TIME_GROUPS else GroupBy.MONTH
+        return _compile_grouped(plan, where, params, force_group=grain)
     if plan.group_by is not GroupBy.NONE:
-        return _compile_grouped(plan, table, where, params)
-    return _compile_aggregate(plan, table, where, params)
+        return _compile_grouped(plan, where, params)
+    return _compile_aggregate(plan, where, params)
 
 
-def _build_where(plan: FinanceQueryPlan, table: str, params: dict[str, Any]) -> str:
-    """Only vendor lookup filters on name, as an exact bound parameter; fuzzy
-    matching lives in the resolver. `unreconciled` is an intent, not a filter."""
+def _build_where(plan: FinanceQueryPlan, params: dict[str, Any], *,
+                 utr_hash: str | None) -> str:
+    """Every value is a bound parameter. The counterparty must already be resolved to
+    an exact stored value; fuzzy matching lives in the resolver."""
     clauses: list[str] = []
-    date_col = _DATE_COLUMN[table]
+
+    if plan.entity_id:
+        clauses.append("t.entity_id = {entity_id:String}")
+        params["entity_id"] = plan.entity_id
 
     if plan.date_range is not None:
         if not plan.date_range.is_resolved:
             raise CompilationError(
                 "date_range reached the compiler unresolved; call services.dates.resolve first"
             )
-        clauses.append(f"t.{date_col} >= {{d_start:Date}} AND t.{date_col} <= {{d_end:Date}}")
+        clauses.append("t.txn_date >= {d_start:Date} AND t.txn_date <= {d_end:Date}")
         params["d_start"] = plan.date_range.resolved_start
         params["d_end"] = plan.date_range.resolved_end
 
-    if plan.vendor_id:
-        clauses.append("t.vendor_id = {vendor_id:String}")
-        params["vendor_id"] = plan.vendor_id
-    elif plan.vendor_name and table == "vendors":
-        clauses.append("t.vendor_name = {vendor_name:String}")
-        params["vendor_name"] = plan.vendor_name
-    elif plan.vendor_name and not plan.vendor_id:
+    if plan.counterparty:
+        clauses.append("t.counterparty = {counterparty:String}")
+        params["counterparty"] = plan.counterparty
+    elif plan.counterparty_name:
         raise CompilationError(
-            "vendor_name present but unresolved; the vendor resolver must run before compilation"
+            "counterparty_name present but unresolved; the resolver must run before compilation"
         )
 
-    if plan.category:
-        clauses.append("t.category = {category:String}")
-        params["category"] = plan.category
+    if plan.account_id:
+        clauses.append("t.account_id = {account_id:String}")
+        params["account_id"] = plan.account_id
+    elif plan.account_last4:
+        raise CompilationError("account_last4 present but unresolved to an account_id")
 
-    if plan.account_code and table == "transactions":
-        clauses.append("t.account_code = {account_code:String}")
-        params["account_code"] = plan.account_code
+    if plan.bank_code:
+        clauses.append("t.bank_code = {bank_code:String}")
+        params["bank_code"] = plan.bank_code.upper()
 
-    if plan.txn_status and table in {"transactions", "vendor_payouts"}:
-        clauses.append("t.status = {txn_status:String}")
-        params["txn_status"] = plan.txn_status.value
+    if plan.transaction_type:
+        clauses.append("t.transaction_type = {transaction_type:String}")
+        params["transaction_type"] = plan.transaction_type.value
 
-    if plan.recon_status and table == "transactions":
-        clauses.append("t.reconciliation_status = {recon_status:String}")
-        params["recon_status"] = plan.recon_status.value
+    if plan.channel:
+        clauses.append("t.channel = {channel:String}")
+        params["channel"] = plan.channel.value
 
-    if plan.direction and table == "transactions":
-        clauses.append("t.direction = {direction:String}")
-        params["direction"] = plan.direction.value
-
-    if plan.currency:
-        clauses.append("t.currency = {currency:String}")
-        params["currency"] = plan.currency.upper()
-
-    amount_col = _AMOUNT_COLUMN[table]
-    if amount_col and plan.min_amount is not None:
-        clauses.append(f"t.{amount_col} >= {{min_amount:Decimal64(2)}}")
+    if plan.min_amount is not None:
+        clauses.append("t.transaction_amount >= {min_amount:Decimal64(2)}")
         params["min_amount"] = plan.min_amount
-    if amount_col and plan.max_amount is not None:
-        clauses.append(f"t.{amount_col} <= {{max_amount:Decimal64(2)}}")
+    if plan.max_amount is not None:
+        clauses.append("t.transaction_amount <= {max_amount:Decimal64(2)}")
         params["max_amount"] = plan.max_amount
 
-    if plan.intent is Intent.UNRECONCILED and plan.recon_status is None:
-        clauses.append("t.reconciliation_status IN ('unmatched', 'pending', 'disputed')")
+    if plan.reference:
+        if plan.reference_kind is ReferenceKind.UTR:
+            if not utr_hash:
+                raise CompilationError("UTR lookup requires the blind index from the pipeline")
+            clauses.append("t.utr_hash = {utr_hash:String}")
+            params["utr_hash"] = utr_hash
+        else:
+            clauses.append("t.transaction_reference_id = {reference:String}")
+            params["reference"] = plan.reference.strip()
 
     return " AND ".join(clauses) if clauses else "1"
 
 
-def _metric_expr(plan: FinanceQueryPlan, table: str) -> str:
-    amount_col = _AMOUNT_COLUMN[table]
-    if plan.metric is not Metric.COUNT and not amount_col:
-        raise CompilationError(f"metric {plan.metric.value} is not available on {table}")
-    return _METRIC_SQL[plan.metric].format(col=f"t.{amount_col}")
+def _metric_expr(plan: FinanceQueryPlan) -> str:
+    return _METRIC_SQL[plan.metric].format(col="t.transaction_amount")
 
 
-def _compile_aggregate(plan, table, where, params) -> CompiledQuery:
-    metric = _metric_expr(plan, table)
+def _compile_aggregate(plan, where, params) -> CompiledQuery:
     sql = (
-        f"SELECT {metric} AS value, count() AS record_count, "
-        f"any(t.currency) AS currency, uniqExact(t.currency) AS currency_variants "
-        f"FROM {DB}.{table} AS t WHERE {where}"
-    ) if table != "vendors" else (
-        f"SELECT count() AS value, count() AS record_count FROM {DB}.{table} AS t WHERE {where}"
+        f"SELECT {_metric_expr(plan)} AS value, count() AS record_count, "
+        "uniqExact(t.transaction_type) AS type_variants "
+        f"FROM {DB}.transaction AS t WHERE {where}"
     )
     return CompiledQuery(sql=sql, params=params, kind="aggregate")
 
 
-def _compile_grouped(plan, table, where, params, force_group: GroupBy | None = None) -> CompiledQuery:
+def _compile_grouped(plan, where, params, force_group: GroupBy | None = None) -> CompiledQuery:
     """Time series are ordered chronologically regardless of order_desc."""
     group = force_group or plan.group_by
     if group not in _GROUP_BY_SQL:
         raise CompilationError(f"unsupported group_by: {group}")
     expr, label = _GROUP_BY_SQL[group]
-    metric = _metric_expr(plan, table)
     order = "DESC" if plan.order_desc else "ASC"
-    if group in {GroupBy.DAY, GroupBy.WEEK, GroupBy.MONTH, GroupBy.QUARTER, GroupBy.YEAR}:
-        order_by = f"{label} ASC"
-    else:
-        order_by = f"value {order}"
-
+    order_by = f"{label} ASC" if group in TIME_GROUPS else f"value {order}"
     params["row_limit"] = min(plan.limit, MAX_LIMIT)
     sql = (
-        f"SELECT {expr} AS {label}, {metric} AS value, count() AS record_count "
-        f"FROM {DB}.{table} AS t WHERE {where} "
+        f"SELECT {expr} AS {label}, {_metric_expr(plan)} AS value, count() AS record_count "
+        f"FROM {DB}.transaction AS t WHERE {where} "
         f"GROUP BY {label} ORDER BY {order_by} LIMIT {{row_limit:UInt32}}"
     )
     return CompiledQuery(sql=sql, params=params, kind="grouped",
                          label_column=label, columns=[label, "value", "record_count"])
 
 
-def _compile_detail(plan, table, where, params) -> CompiledQuery:
-    cols = _DETAIL_COLUMNS[table]
+def _compile_detail(plan, where, params, *, order: str) -> CompiledQuery:
+    cols = TRANSACTION_DETAIL_COLUMNS
     select = ", ".join(f"t.{c} AS {c}" for c in cols)
-    date_col = _DATE_COLUMN[table]
     params["row_limit"] = min(plan.limit, MAX_LIMIT)
     sql = (
-        f"SELECT {select} FROM {DB}.{table} AS t WHERE {where} "
-        f"ORDER BY t.{date_col} DESC LIMIT {{row_limit:UInt32}}"
+        f"SELECT {select}, count() OVER () AS total_matches "
+        f"FROM {DB}.transaction AS t WHERE {where} "
+        f"ORDER BY {order}, t.transaction_id LIMIT {{row_limit:UInt32}}"
     )
     return CompiledQuery(sql=sql, params=params, kind="detail", columns=cols)
 
 
-def _compile_recon_rate(plan, where, params) -> CompiledQuery:
+def _compile_balance(plan: FinanceQueryPlan, params: dict[str, Any]) -> CompiledQuery:
+    """Balances come from the account table, never from summing transactions."""
+    clauses: list[str] = []
+    if plan.entity_id:
+        clauses.append("a.entity_id = {entity_id:String}")
+        params["entity_id"] = plan.entity_id
+    if plan.account_id:
+        clauses.append("a.account_id = {account_id:String}")
+        params["account_id"] = plan.account_id
+    elif plan.account_last4:
+        raise CompilationError("account_last4 present but unresolved to an account_id")
+    if plan.bank_code:
+        clauses.append("a.bank_code = {bank_code:String}")
+        params["bank_code"] = plan.bank_code.upper()
+    where = " AND ".join(clauses) if clauses else "1"
+    cols = ACCOUNT_DETAIL_COLUMNS
+    select = ", ".join(f"a.{c} AS {c}" for c in cols)
+    params["row_limit"] = min(plan.limit, MAX_LIMIT)
     sql = (
-        "SELECT "
-        "countIf(t.reconciliation_status = 'matched') AS matched, "
-        "countIf(t.reconciliation_status != 'matched') AS unmatched, "
-        "count() AS record_count, "
-        "if(count() = 0, 0, round(100.0 * countIf(t.reconciliation_status = 'matched') / count(), 2)) AS value "
-        f"FROM {DB}.transactions AS t WHERE {where}"
+        f"SELECT {select} FROM {DB}.account AS a FINAL WHERE {where} "
+        "ORDER BY a.available_balance DESC LIMIT {row_limit:UInt32}"
     )
-    return CompiledQuery(sql=sql, params=params, kind="aggregate")
+    return CompiledQuery(sql=sql, params=params, kind="detail", columns=cols)

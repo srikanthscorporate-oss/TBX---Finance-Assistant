@@ -6,7 +6,7 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'StrawHat Finance Assistant',
   description:
-    'Ask about spend, vendor payouts and reconciliation. Every figure is computed from your data and verified before it is shown.',
+    'Ask about your bank transactions, counterparties, accounts and balances. Every figure is computed from your statement data and verified before it is shown.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

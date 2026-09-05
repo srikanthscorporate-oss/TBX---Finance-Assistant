@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .enums import Direction, GroupBy, Intent, Metric, ReconStatus, TxnStatus
+from .enums import Channel, GroupBy, Intent, Metric, ReferenceKind, TransactionType
 
 RelativeRange = Literal[
     "last_month",
@@ -22,6 +22,8 @@ RelativeRange = Literal[
     "last_6_months",
     "last_12_months",
     "month_before_last",
+    "today",
+    "yesterday",
     "all_time",
 ]
 """Resolved in services/dates.py against the dataset's max transaction date, not today."""
@@ -66,27 +68,31 @@ class DateRange(BaseModel):
 class FinanceQueryPlan(BaseModel):
     """A typed description of one query.
 
-    The model proposes `vendor_name`; the resolver sets `vendor_id`. `user_question` is
-    an echo for tracing and is never queried on.
+    The model proposes `counterparty_name`; the resolver sets `counterparty` to the exact
+    stored value. `entity_id` is set by the API from the request, never by the model.
+    `user_question` is an echo for tracing and is never queried on.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     intent: Intent
 
-    vendor_name: str | None = None
-    vendor_id: str | None = None
-    category: str | None = None
-    account_code: str | None = None
+    entity_id: str | None = None
+    counterparty_name: str | None = None
+    counterparty: str | None = None
+    account_last4: str | None = Field(default=None, min_length=4, max_length=4, pattern=r"^\d{4}$")
+    account_id: str | None = None
+    bank_code: str | None = Field(default=None, max_length=10)
+
+    reference: str | None = None
+    reference_kind: ReferenceKind | None = None
 
     date_range: DateRange | None = None
     compare_to: DateRange | None = None
-    txn_status: TxnStatus | None = None
-    recon_status: ReconStatus | None = None
-    direction: Direction | None = None
-    min_amount: float | None = None
-    max_amount: float | None = None
-    currency: str | None = Field(default=None, max_length=3)
+    transaction_type: TransactionType | None = None
+    channel: Channel | None = None
+    min_amount: float | None = Field(default=None, ge=0)
+    max_amount: float | None = Field(default=None, ge=0)
 
     metric: Metric = Metric.SUM
     group_by: GroupBy = GroupBy.NONE
@@ -95,8 +101,8 @@ class FinanceQueryPlan(BaseModel):
 
     user_question: str | None = None
 
-    @field_validator("vendor_name", "vendor_id", "category", "account_code",
-                     "currency", mode="after")
+    @field_validator("counterparty_name", "counterparty", "account_id", "bank_code",
+                     "reference", "entity_id", mode="after")
     @classmethod
     def _no_control_characters(cls, v: str | None) -> str | None:
         """Reject control characters and over-long values.
@@ -116,25 +122,40 @@ class FinanceQueryPlan(BaseModel):
     def _intent_requirements(self) -> "FinanceQueryPlan":
         """Intent-level coherence.
 
-        An entity-scoped intent is satisfied by naming the entity or grouping across it.
-        vendor_payouts selects the payouts table and does not require a vendor.
+        Spend intents are debits only, so a "how much did I spend" answer can never mix in
+        credits. A counterparty intent needs a counterparty or a grouping across them. A
+        reference lookup needs the reference and defaults to the plaintext reference id.
         """
         if self.intent is Intent.PERIOD_COMPARISON and self.compare_to is None:
             raise ValueError("period_comparison requires `compare_to`")
 
-        has_vendor = bool(self.vendor_name or self.vendor_id)
-        grouped_by_vendor = self.group_by is GroupBy.VENDOR
-        if self.intent is Intent.VENDOR_SPEND and not (has_vendor or grouped_by_vendor):
-            raise ValueError("vendor_spend needs either a vendor or group_by=vendor")
+        has_cp = bool(self.counterparty_name or self.counterparty)
+        if self.intent is Intent.COUNTERPARTY_SPEND and not (
+                has_cp or self.group_by is GroupBy.COUNTERPARTY):
+            raise ValueError("counterparty_spend needs a counterparty or group_by=counterparty")
 
-        grouped_by_category = self.group_by is GroupBy.CATEGORY
-        if self.intent is Intent.CATEGORY_SPEND and not (self.category or grouped_by_category):
-            raise ValueError(
-                "category_spend needs either a category or group_by=category")
+        if self.intent is Intent.REFERENCE_LOOKUP:
+            if not self.reference:
+                raise ValueError("reference_lookup requires `reference`")
+            if self.reference_kind is None:
+                self.reference_kind = ReferenceKind.REFERENCE
+        elif self.reference and self.reference_kind is None:
+            self.reference_kind = ReferenceKind.REFERENCE
+
+        if self.intent in {Intent.SPEND_SUMMARY, Intent.COUNTERPARTY_SPEND,
+                           Intent.TOP_COUNTERPARTIES, Intent.LARGEST_TRANSACTIONS}:
+            if self.transaction_type is None and self.metric is not Metric.COUNT:
+                self.transaction_type = TransactionType.DEBIT
+
         if self.min_amount is not None and self.max_amount is not None:
             if self.min_amount > self.max_amount:
                 raise ValueError("min_amount must not exceed max_amount")
         return self
+
+    @property
+    def is_detail(self) -> bool:
+        return self.intent in {Intent.TRANSACTION_LOOKUP, Intent.REFERENCE_LOOKUP,
+                               Intent.LARGEST_TRANSACTIONS}
 
     def fingerprint(self) -> str:
         """Stable hash of the plan minus `user_question`, for caching and dedup."""
@@ -149,19 +170,24 @@ class FinanceQueryPlan(BaseModel):
 class PlanDelta(BaseModel):
     """A follow-up turn: only the fields that change relative to the previous plan.
 
-    `clear` lists fields the follow-up resets. A changed vendor name drops the resolved id.
+    `clear` lists fields the follow-up resets. A changed counterparty name drops the
+    resolved counterparty.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     intent: Intent | None = None
-    vendor_name: str | None = None
-    category: str | None = None
-    account_code: str | None = None
+    counterparty_name: str | None = None
+    account_last4: str | None = None
+    bank_code: str | None = None
+    reference: str | None = None
+    reference_kind: ReferenceKind | None = None
     date_range: DateRange | None = None
     compare_to: DateRange | None = None
-    txn_status: TxnStatus | None = None
-    recon_status: ReconStatus | None = None
+    transaction_type: TransactionType | None = None
+    channel: Channel | None = None
+    min_amount: float | None = None
+    max_amount: float | None = None
     metric: Metric | None = None
     group_by: GroupBy | None = None
     limit: int | None = None
@@ -171,10 +197,22 @@ class PlanDelta(BaseModel):
     def apply_to(self, base: FinanceQueryPlan) -> FinanceQueryPlan:
         data = base.model_dump()
         for field in self.clear:
-            if field in data and field not in {"intent", "metric", "group_by", "limit"}:
+            if field in data and field not in {"intent", "metric", "group_by", "limit",
+                                               "entity_id"}:
                 data[field] = None
+            if field == "counterparty_name":
+                data["counterparty"] = None
+            if field == "account_last4":
+                data["account_id"] = None
         for field, value in self.model_dump(exclude={"clear"}, exclude_none=True).items():
             data[field] = value
-        if self.vendor_name is not None:
-            data["vendor_id"] = None
+        if self.counterparty_name is not None:
+            data["counterparty"] = None
+        if self.account_last4 is not None:
+            data["account_id"] = None
+        if self.intent is not None and self.intent not in {
+                Intent.SPEND_SUMMARY, Intent.COUNTERPARTY_SPEND,
+                Intent.TOP_COUNTERPARTIES, Intent.LARGEST_TRANSACTIONS}:
+            if self.transaction_type is None and "transaction_type" not in self.clear:
+                data["transaction_type"] = base.transaction_type
         return FinanceQueryPlan.model_validate(data)

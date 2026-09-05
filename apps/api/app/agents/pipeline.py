@@ -6,7 +6,7 @@ from typing import Callable, Iterable
 
 from pydantic import ValidationError
 
-from ..contracts.enums import Metric, ResponseState
+from ..contracts.enums import Intent, Metric, ReferenceKind, ResponseState
 from ..contracts.evidence import EvidencePackage
 from ..llm.router import AllModelsRateLimited, Tier
 from ..contracts.events import AgentEvent, EventType
@@ -17,7 +17,8 @@ from ..services import confidence as conf
 from ..services import verification as verif
 from ..services.compiler import CompilationError, compile_plan
 from ..services.dates import DateResolutionError, resolve
-from ..services.resolver import MatchKind, resolve_vendor
+from ..services.crypto import FieldCipher, KeyError_
+from ..services.resolver import MatchKind, resolve_account, resolve_counterparty
 from . import anomaly as anomaly_agent
 from . import relevance, suggestions
 from .composer_agent import Composer
@@ -28,6 +29,16 @@ from .judge import Dispatch, Judge
 from .planner import Planner, PlanningFailed
 from ..services import composer as comp_svc
 from ..services.cache import cache as get_cache
+import logging
+
+log = logging.getLogger("tbx.pipeline")
+
+PERIOD_OPTIONS = [
+    ("last_7_days", "Last 7 days"), ("last_30_days", "Last 30 days"),
+    ("this_month", "This month"), ("last_month", "Last month"),
+    ("last_90_days", "Last 90 days"), ("all_time", "All time"),
+]
+"""Offered when a list question names no period; value is the RelativeRange key."""
 
 __all__ = ["Pipeline", "ConversationState", "DatasetContext", "RunContext", "CAPABILITIES"]
 
@@ -41,15 +52,24 @@ class Pipeline:
         self.on_event = on_event
         self.planner = Planner(router, ctx)
         self.composer = Composer(router)
-        self.evidence = EvidenceBuilder(ctx)
+        try:
+            self.cipher: FieldCipher | None = FieldCipher.from_env()
+        except KeyError_ as e:
+            log.warning("%s; UTR lookups will not decrypt", e)
+            self.cipher = None
+        self.evidence = EvidenceBuilder(ctx, self.cipher)
         self.judge = judge or Judge(get_cache(), ctx.dataset_version)
         router.judge = self.judge
 
     def run(self, question: str, state: ConversationState,
-            model_choice: str | None = None) -> AssistantResponse:
+            model_choice: str | None = None, entity_id: str | None = None) -> AssistantResponse:
         rc = RunContext(run_id=f"run_{uuid.uuid4().hex[:12]}",
                         conversation_id=state.conversation_id,
                         on_event=self.on_event)
+        if entity_id is not None:
+            state.entity_id = entity_id or None
+        elif state.entity_id is None:
+            state.entity_id = self.ctx.default_entity
         try:
             pinned = self.planner.router.spec_for_choice(model_choice)
         except ValueError as e:
@@ -58,7 +78,7 @@ class Pipeline:
         rc.emit(EventType.RUN_STARTED, "Understanding your question",
                 question=question, turn=state.turns + 1,
                 model=pinned.model if pinned else "auto")
-        state.pending_plan = state.pending_question = None
+        state.pending_plan = state.pending_question = state.pending_field = None
         if not question.strip():
             return self._respond(rc, ResponseState.ERROR, message="Please type a question.")
         try:
@@ -142,58 +162,91 @@ class Pipeline:
                 rc, ResponseState.CLARIFICATION_REQUIRED,
                 clarification=Clarification(
                     question="I couldn't tell what that changes about the previous "
-                             "question. Could you state the period or vendor you mean?"))
+                             "question. Could you state the period, counterparty or "
+                             "amount you mean?"))
 
         plan.user_question = question
         rc.emit(EventType.INTENT_DETECTED, f"Intent: {plan.intent.value}",
                 intent=plan.intent.value, metric=plan.metric.value,
                 group_by=plan.group_by.value)
 
+        plan.entity_id = state.entity_id
         entity_match = entity_score = None
-        if plan.vendor_name and not plan.vendor_id:
-            outcome = self._resolve_vendor(plan, rc)
-            if isinstance(outcome, AssistantResponse):
-                if outcome.state is ResponseState.CLARIFICATION_REQUIRED:
-                    state.pending_plan = plan
-                    state.pending_question = question
-                return outcome
-            entity_match, entity_score = outcome
+        outcome = self._resolve(plan, rc)
+        if isinstance(outcome, AssistantResponse):
+            if outcome.state is ResponseState.CLARIFICATION_REQUIRED:
+                state.pending_plan = plan
+                state.pending_question = question
+                state.pending_field = outcome.clarification.field if outcome.clarification else None
+            return outcome
+        entity_match, entity_score = outcome
 
         return self._execute(question, state, rc, plan, entity_match, entity_score, pinned,
                              dispatch=d, cache_hit=cache_hit)
 
-    def run_resolved(self, vendor_id: str, state: ConversationState,
-                     model_choice: str | None = None) -> AssistantResponse:
-        """Complete a plan parked on a vendor clarification without a second planning call."""
+    def run_resolved(self, value: str, state: ConversationState,
+                     model_choice: str | None = None, field: str | None = None) -> AssistantResponse:
+        """Complete a plan parked on a clarification without a second planning call.
+
+        `field` names what the option answers: counterparty, account, or date_range. It
+        defaults to the field the clarification asked for.
+        """
         rc = RunContext(run_id=f"run_{uuid.uuid4().hex[:12]}",
                         conversation_id=state.conversation_id, on_event=self.on_event)
         plan, question = state.pending_plan, state.pending_question
-        if plan is None:
+        field = field or state.pending_field
+        if plan is None or not field:
             rc.emit(EventType.RUN_FAILED, "Nothing to clarify")
             return self._respond(rc, ResponseState.ERROR,
                                  message="There is no pending question to complete.")
-        vendor = next((v for v in self.ctx.vendors if v.vendor_id == vendor_id), None)
-        if vendor is None:
-            rc.emit(EventType.RUN_FAILED, "Unknown vendor id", vendor_id=vendor_id)
-            return self._respond(rc, ResponseState.ERROR,
-                                 message="That option does not match a vendor in the dataset.")
         try:
             pinned = self.planner.router.spec_for_choice(model_choice)
         except ValueError as e:
             return self._respond(rc, ResponseState.ERROR, message=str(e))
 
-        state.pending_plan = state.pending_question = None
-        plan = plan.model_copy(update={"vendor_id": vendor.vendor_id,
-                                       "vendor_name": vendor.vendor_name})
         rc.emit(EventType.RUN_STARTED, "Completing your question", question=question,
                 turn=state.turns + 1, model=pinned.model if pinned else "auto")
         rc.emit(EventType.SCOPE_CHECKED, "In scope")
+
+        if field == "counterparty":
+            rec = next((c for c in self.ctx.counterparties if c.name == value), None)
+            if rec is None:
+                rc.emit(EventType.RUN_FAILED, "Unknown counterparty", value=value)
+                return self._respond(rc, ResponseState.ERROR,
+                                     message="That option does not match a counterparty in the records.")
+            plan = plan.model_copy(update={"counterparty": rec.name, "counterparty_name": rec.name})
+            rc.emit(EventType.ENTITY_RESOLVED, f"Counterparty: {rec.name}",
+                    query=rec.name, counterparty=rec.name, match="chosen", score=1.0)
+        elif field == "account":
+            acct = next((a for a in self.ctx.accounts if a.account_id == value), None)
+            if acct is None:
+                rc.emit(EventType.RUN_FAILED, "Unknown account", value=value)
+                return self._respond(rc, ResponseState.ERROR,
+                                     message="That option does not match an account in the records.")
+            plan = plan.model_copy(update={"account_id": acct.account_id, "account_last4": acct.last4})
+            rc.emit(EventType.ENTITY_RESOLVED, f"Account: {acct.masked}",
+                    account=acct.masked, match="chosen", score=1.0)
+        elif field == "date_range":
+            from ..contracts.plan import DateRange
+            try:
+                plan = plan.model_copy(update={"date_range": DateRange(relative=value)})  # type: ignore[arg-type]
+            except ValidationError:
+                return self._respond(rc, ResponseState.ERROR,
+                                     message="That option is not a period I understand.")
+        else:
+            return self._respond(rc, ResponseState.ERROR, message=f"Unknown clarification field {field}.")
+
+        state.pending_plan = state.pending_question = state.pending_field = None
         rc.emit(EventType.INTENT_DETECTED, f"Intent: {plan.intent.value}",
                 intent=plan.intent.value, metric=plan.metric.value, group_by=plan.group_by.value)
-        rc.emit(EventType.ENTITY_RESOLVED, f"Vendor: {vendor.vendor_name}",
-                query=vendor.vendor_name, vendor_id=vendor.vendor_id, match="chosen", score=1.0)
+        outcome = self._resolve(plan, rc)
+        if isinstance(outcome, AssistantResponse):
+            if outcome.state is ResponseState.CLARIFICATION_REQUIRED:
+                state.pending_plan, state.pending_question = plan, question
+                state.pending_field = outcome.clarification.field if outcome.clarification else None
+            return outcome
         try:
-            return self._execute(question or "", state, rc, plan, MatchKind.EXACT, 1.0, pinned,
+            return self._execute(question or "", state, rc, plan, outcome[0], outcome[1], pinned,
                                  dispatch=Dispatch("skip", "llm", False, None,
                                                    ["clarification answered; planner not needed"]),
                                  cache_hit=None)
@@ -245,8 +298,14 @@ class Pipeline:
             self._judge_record(rc, resp, cache_hit="answer")
             return resp
 
+        utr_hash = None
+        if plan.reference and plan.reference_kind is ReferenceKind.UTR:
+            if self.cipher is None:
+                return self._respond(rc, ResponseState.ERROR,
+                                     message="UTR lookup is not available: the data key is not configured.")
+            utr_hash = self.cipher.blind_index(plan.reference)
         try:
-            cq = compile_plan(plan)
+            cq = compile_plan(plan, utr_hash=utr_hash)
         except CompilationError as e:
             rc.emit(EventType.RUN_FAILED, "Could not compile query", error=str(e))
             return self._respond(rc, ResponseState.ERROR,
@@ -284,13 +343,15 @@ class Pipeline:
                         f"({', '.join(failed)}). Rather than guess, I'd rather tell you.",
                 capabilities=CAPABILITIES)
 
-        if count == 0 and plan.metric is Metric.SUM:
-            period = plan.date_range.resolved_label if plan.date_range else "the dataset"
-            return self._respond(
-                rc, ResponseState.DATA_UNAVAILABLE,
-                message=f"There are no matching records for {period}, so there is no "
-                        "figure to report.",
-                capabilities=CAPABILITIES)
+        if count == 0 and (plan.metric is Metric.SUM or plan.is_detail):
+            period = plan.date_range.resolved_label if plan.date_range else "the records"
+            if plan.reference:
+                what = (f"No transaction carries the {plan.reference_kind.value if plan.reference_kind else 'reference'} "
+                        f"“{plan.reference}”. Check the number, or say “UTR” if it is one.")
+            else:
+                what = f"There are no matching transactions in {period}, so there is nothing to report."
+            return self._respond(rc, ResponseState.DATA_UNAVAILABLE, message=what,
+                                 capabilities=CAPABILITIES)
 
         evidence = self.evidence.build(rc, plan, cq, result, aggregate, rows, vr)
         evidence.confidence = conf.compute(
@@ -318,8 +379,7 @@ class Pipeline:
             fact = evidence.fact_map().get("total")
             if fact and plan.date_range and plan.date_range.resolved_start:
                 a = anomaly_agent.check(
-                    self.ch, "vendor_payouts" if plan.intent.value == "vendor_payouts" else "transactions",
-                    plan.vendor_id, plan.vendor_name or plan.vendor_id,
+                    self.ch, plan.counterparty or "", plan.entity_id,
                     plan.date_range.resolved_start, plan.date_range.resolved_end,
                     float(fact.value), evidence.currency)
                 rc.emit(EventType.TOOL_COMPLETED,
@@ -368,48 +428,98 @@ class Pipeline:
         except Exception:  # noqa: BLE001 -- scoring must never fail a run
             pass
 
-    def _resolve_vendor(self, plan, rc: RunContext):
-        """Returns (match_kind, score), or a finished response when it cannot."""
-        res = resolve_vendor(plan.vendor_name, self.ctx.vendors)
+    def _resolve(self, plan, rc: RunContext):
+        """Counterparty, account and (for open-ended lists) period resolution.
 
-        if res.kind is MatchKind.AMBIGUOUS:
-            rc.emit(EventType.CLARIFICATION_REQUIRED,
-                    f"'{plan.vendor_name}' matches {len(res.candidates)} vendors")
+        Returns (match_kind, score), or a finished response: a clarification with a
+        dropdown when a name is ambiguous or a list has no period, DATA_UNAVAILABLE
+        when a name matches nothing.
+        """
+        match, score = None, None
+        if plan.counterparty_name and not plan.counterparty:
+            res = resolve_counterparty(plan.counterparty_name,
+                                       self.ctx.counterparties_for(plan.entity_id))
+            if res.kind is MatchKind.AMBIGUOUS:
+                rc.emit(EventType.CLARIFICATION_REQUIRED,
+                        f"'{plan.counterparty_name}' matches {len(res.candidates)} counterparties")
+                return self._respond(
+                    rc, ResponseState.CLARIFICATION_REQUIRED,
+                    clarification=Clarification(
+                        question=f"“{plan.counterparty_name}” matches {len(res.candidates)} "
+                                 "names in your transactions. Which one do you mean?",
+                        field="counterparty",
+                        options=[ClarificationOption(
+                            label=c.record.name, value=c.record.name,
+                            hint=f"{c.record.txn_count:,} transactions via {c.record.channel}")
+                            for c in res.candidates]))
+            if res.kind is MatchKind.NOT_FOUND:
+                rc.emit(EventType.RUN_FAILED, f"No counterparty named '{plan.counterparty_name}'")
+                near = self.ctx.counterparties_for(plan.entity_id)[:6]
+                return self._respond(
+                    rc, ResponseState.DATA_UNAVAILABLE,
+                    message=f"None of your transactions name “{plan.counterparty_name}”. "
+                            "These are the counterparties you deal with most:",
+                    clarification=Clarification(
+                        question="Pick one to ask the same question about:",
+                        field="counterparty",
+                        options=[ClarificationOption(label=c.name, value=c.name,
+                                                     hint=f"{c.txn_count:,} transactions")
+                                 for c in near]),
+                    capabilities=CAPABILITIES)
+            plan.counterparty = res.best.name
+            plan.counterparty_name = res.best.name
+            rc.emit(EventType.ENTITY_RESOLVED, f"Counterparty: {res.best.name}",
+                    query=res.query, counterparty=res.best.name,
+                    match=res.kind.value, score=res.score)
+            match, score = res.kind, res.score
+
+        if plan.account_last4 and not plan.account_id:
+            ar = resolve_account(plan.account_last4, self.ctx.accounts_for(plan.entity_id))
+            if ar.kind is MatchKind.AMBIGUOUS:
+                rc.emit(EventType.CLARIFICATION_REQUIRED,
+                        f"{len(ar.matches)} accounts end in {plan.account_last4}")
+                return self._respond(
+                    rc, ResponseState.CLARIFICATION_REQUIRED,
+                    clarification=Clarification(
+                        question=f"{len(ar.matches)} accounts end in {plan.account_last4}. Which one?",
+                        field="account",
+                        options=[ClarificationOption(label=a.masked, value=a.account_id,
+                                                     hint=a.bank_name)
+                                 for a in ar.matches]))
+            if ar.kind is MatchKind.NOT_FOUND:
+                rc.emit(EventType.RUN_FAILED, f"No account ending {plan.account_last4}")
+                accts = self.ctx.accounts_for(plan.entity_id)[:8]
+                return self._respond(
+                    rc, ResponseState.DATA_UNAVAILABLE,
+                    message=f"No account ends in {plan.account_last4}. Your accounts are:",
+                    clarification=Clarification(
+                        question="Pick an account:", field="account",
+                        options=[ClarificationOption(label=a.masked, value=a.account_id,
+                                                     hint=a.bank_name) for a in accts]),
+                    capabilities=CAPABILITIES)
+            plan.account_id = ar.matches[0].account_id
+            rc.emit(EventType.ENTITY_RESOLVED, f"Account: {ar.matches[0].masked}",
+                    account=ar.matches[0].masked, match="exact", score=1.0)
+            if match is None:
+                match, score = MatchKind.EXACT, 1.0
+
+        if (plan.intent in {Intent.TRANSACTION_LOOKUP, Intent.LARGEST_TRANSACTIONS}
+                and plan.date_range is None and not plan.reference):
+            rc.emit(EventType.CLARIFICATION_REQUIRED, "List question without a period")
             return self._respond(
                 rc, ResponseState.CLARIFICATION_REQUIRED,
                 clarification=Clarification(
-                    question=f"There are {len(res.candidates)} vendors matching "
-                             f"“{plan.vendor_name}”. Which one do you mean?",
-                    field="vendor_name",
-                    options=[ClarificationOption(label=c.record.vendor_name,
-                                                 value=c.record.vendor_id,
-                                                 hint=c.record.category)
-                             for c in res.candidates]))
+                    question="Which period should I look at?",
+                    field="date_range",
+                    options=[ClarificationOption(label=lbl, value=key)
+                             for key, lbl in PERIOD_OPTIONS]))
 
-        if res.kind is MatchKind.NOT_FOUND:
-            rc.emit(EventType.RUN_FAILED, f"No vendor named '{plan.vendor_name}'")
-            near = [v.vendor_name for v in self.ctx.vendors][:6]
-            return self._respond(
-                rc, ResponseState.DATA_UNAVAILABLE,
-                message=f"There is no vendor matching “{plan.vendor_name}” in this "
-                        "dataset. Did you mean one of these?",
-                clarification=Clarification(
-                    question="Pick a vendor to ask the same question about:",
-                    field="vendor_name",
-                    options=[ClarificationOption(label=n, value=n) for n in near]),
-                capabilities=CAPABILITIES)
-
-        plan.vendor_id = res.best.vendor_id
-        plan.vendor_name = res.best.vendor_name
-        rc.emit(EventType.ENTITY_RESOLVED, f"Vendor: {res.best.vendor_name}",
-                query=res.query, vendor_id=res.best.vendor_id,
-                match=res.kind.value, score=res.score)
-        return res.kind, res.score
+        return match, score
 
     def _refuse(self, rc: RunContext, scope: str, reason: str | None) -> AssistantResponse:
         """Refuse with a fixed message and guided questions; the model's reason goes to the log."""
         guide = Clarification(
-            question="Ask about spend, payouts or reconciliation. For example:",
+            question="Ask about your transactions, counterparties, balances or a reference. For example:",
             field="guided",
             options=[ClarificationOption(label=q, value=q) for q in GUIDED_QUESTIONS])
         if scope == "out_of_scope":

@@ -1,4 +1,4 @@
-"""Vendor anomaly callout from a median-and-MAD z-score over the vendor's prior months.
+"""Counterparty anomaly callout from a median-and-MAD z-score over its prior months.
 
 The history query excludes the period under test. No model call.
 """
@@ -24,14 +24,18 @@ class Anomaly:
     sentence: str | None
 
 
-def check(ch: ClickHouseClient, table: str, vendor_id: str, vendor_name: str,
+def check(ch: ClickHouseClient, counterparty: str, entity_id: str | None,
           start, end, current_value: float, currency: str | None) -> Anomaly:
-    date_col = "payout_date" if table == "vendor_payouts" else "txn_date"
-    sql = (f"SELECT toStartOfMonth({date_col}) AS m, sum(amount) AS v FROM tbx_finance.{table} "
-           f"WHERE vendor_id = {{vendor_id:String}} AND {date_col} < {{start:Date}} "
-           f"GROUP BY m ORDER BY m")
+    sql = ("SELECT toStartOfMonth(txn_date) AS m, sum(transaction_amount) AS v "
+           "FROM tbx_finance.transaction WHERE counterparty = {counterparty:String} "
+           "AND transaction_type = 'debit' AND txn_date < {start:Date}"
+           + (" AND entity_id = {entity_id:String}" if entity_id else "")
+           + " GROUP BY m ORDER BY m")
+    params = {"counterparty": counterparty, "start": start}
+    if entity_id:
+        params["entity_id"] = entity_id
     try:
-        rows = ch.query(sql, {"vendor_id": vendor_id, "start": start}).rows
+        rows = ch.query(sql, params).rows
     except QueryError:
         return Anomaly(False, None, None, 0, None, None)
     hist = [float(r["v"]) for r in rows if r.get("v") is not None]
@@ -45,7 +49,7 @@ def check(ch: ClickHouseClient, table: str, vendor_id: str, vendor_name: str,
     sentence = None
     if flagged:
         direction = "higher" if current_value > med else "lower"
-        sentence = (f"Unusual for {vendor_name}: {comp.format_money(current_value, currency)} is "
+        sentence = (f"Unusual for {counterparty}: {comp.format_money(current_value, currency)} is "
                     f"{ratio:.1f}x its typical month of {comp.format_money(med, currency)} "
                     f"over the previous {len(hist)} months ({direction}).")
     return Anomaly(flagged, round(ratio, 2) if ratio else None, round(z, 2), len(hist), med, sentence)

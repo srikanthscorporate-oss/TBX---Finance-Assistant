@@ -30,16 +30,23 @@ def main() -> int:
                 f"call), so its scores are a quota event, not the pipeline. The evaluation "
                 f"re-runs automatically once quota recovers. "
                 f"See [docs/model-choice.md](docs/model-choice.md).")
+    elif r.get("planner") == "stub":
+        para = (f"Measured over {r['turns']} turns of a {r['questions']}-question golden set against\n"
+                f"the offline stub planner on {r['generated_at'][:10]} (deterministic pipeline only; "
+                f"no live-model\nrun exists yet for the bank schema): overall {r['overall_accuracy']:.1%}, "
+                f"grounding {r['grounding_rate']:.0%}, hallucination-free "
+                f"{r['hallucination_free_rate']:.0%}, masking {r.get('masking_rate', 0):.0%}. "
+                f"See [docs/model-choice.md](docs/model-choice.md).")
     else:
         para = (f"Measured over {r['turns']} turns of a {r['questions']}-question golden set against\n"
             f"live models on {r['generated_at'][:10]}: **grounding {r['grounding_rate']:.0%}**, "
             f"**hallucination-free\n{r['hallucination_free_rate']:.0%}**, **verification "
-            f"{r['verification_pass_rate']:.0%}**,\nvendor resolution {r['vendor_resolution_accuracy']:.0%}, "
+            f"{r['verification_pass_rate']:.0%}**,\ncounterparty resolution "
+            f"{r.get('counterparty_resolution_accuracy', 0):.0%}, clarification "
+            f"{r.get('clarification_accuracy', 0):.0%}, masking {r.get('masking_rate', 0):.0%}, "
             f"overall\n{r['overall_accuracy']:.1%}, {e['avg_llm_calls_per_turn']} model calls and "
             f"{e['avg_tokens_per_turn']:.0f} tokens per turn.{tag} "
             f"See [docs/model-choice.md](docs/model-choice.md).")
-    if throttled:
-        row_note = " (throttled run)"
     new, n = re.subn(r"Measured over \d+ turns of a \d+-question golden set against\n.*?See \[docs/model-choice\.md\]\(docs/model-choice\.md\)\.",
                      para, s, count=1, flags=re.S)
     if not n:
@@ -47,6 +54,10 @@ def main() -> int:
     else:
         readme.write_text(new)
 
+    if r.get("planner") == "stub":
+        print(f"refreshed README only: stub run, overall {r['overall_accuracy']:.1%}; "
+              "the model-choice table takes live-model rows only")
+        return 0
     mc = ROOT / "docs" / "model-choice.md"
     t = mc.read_text()
     row = (f"| **gpt-oss-20b** (primary, ALLaM 7B alternate) | {r['overall_accuracy']:.1%} | "

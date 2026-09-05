@@ -9,16 +9,21 @@ ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "evaluation" / "results" / "latest.json"
 OUT = ROOT / "docs" / "sample-questions.md"
 
-SHOWCASE = ["V01", "T01", "T01.1", "R01", "R03", "G02", "E01",
-            "A01", "M01", "O01", "M06", "X01"]
+SHOWCASE = ["C01", "P01", "P01.1", "F01", "T01", "H04", "B02", "X01", "X03",
+            "L03", "L03.c", "A01", "A01.c", "D01", "D04", "O01", "Z01"]
 
 NOTES = {
-    "A01": "Two vendors match “Acme”. The assistant refuses to pick one.",
-    "M01": "The dataset has no GST column, so no figure is invented.",
+    "A01": "“Swiggy” matches SWIGGY and SWIGGY INSTAMART. The assistant asks with a dropdown instead of picking one.",
+    "A01.c": "The chosen option completes the same question without a second planning call.",
+    "L03": "A list with no period asks for one rather than scanning everything.",
+    "L03.c": "The chosen period completes the list; the count is the true match count, not the rows shown.",
+    "D01": "There is no reconciliation field in a bank statement, so no figure is invented.",
+    "D04": "No such counterparty. Reported as absent rather than answered with zero.",
     "O01": "Outside the dataset entirely.",
-    "M06": "No such vendor. Reported as absent rather than answered with zero.",
-    "T01.1": "Follow-up: the period moves, the vendor is carried over.",
-    "X01": "Prompt-injection attempt. The stated number is ignored.",
+    "P01.1": "Follow-up: the period moves, everything else is carried over.",
+    "B02": "Balances come from the account table; the account is shown by its last four digits only.",
+    "X03": "UTR lookup matches on a blind index; the UTR is decrypted only for this one record.",
+    "Z01": "Prompt-injection attempt. The stated number is ignored.",
 }
 
 
@@ -32,13 +37,19 @@ def main() -> int:
         "# Sample Questions and Answers",
         "",
         f"Produced by an actual run of the golden evaluation set on "
-        f"{rep['generated_at']}.",
+        f"{rep['generated_at']}"
+        + (" **using the offline stub planner** (`TBX_USE_STUB_LLM=1`): the wording and "
+           "the routing below come from keyword matching, so they demonstrate the "
+           "deterministic pipeline, not a language model's understanding."
+           if rep.get("planner") == "stub" else "."),
         "",
         f"- **Planner:** `{rep.get('planner', 'unknown')}` - {rep.get('caveat', '')}",
+        f"- **Dataset version:** `{rep.get('dataset_version') or 'unknown'}`",
         f"- **Overall accuracy:** {rep['overall_accuracy']:.1%} "
         f"across {rep['turns']} turns",
         f"- **Grounding rate:** {rep['grounding_rate']:.0%} · "
-        f"**Hallucination-free:** {rep['hallucination_free_rate']:.0%}",
+        f"**Hallucination-free:** {rep['hallucination_free_rate']:.0%} · "
+        f"**Masking:** {rep.get('masking_rate', 0):.0%}",
         "",
         "Every figure below was computed by a database query and verified before "
         "it was rendered. See [architecture](../README.md#how-a-figure-is-produced).",
@@ -51,12 +62,14 @@ def main() -> int:
         r = by_id.get(qid)
         if not r:
             continue
-        lines.append(f"### {r['question']}")
+        lines.append(f"### {r['question']}" + ("  (option chosen from the dropdown)" if qid.endswith(".c") else ""))
         lines.append("")
         said = r.get("answer") or r.get("clarification") or r.get("message") or ""
         lines.append(f"> {said}")
         lines.append("")
         meta = [f"**State:** `{r['state']}`"]
+        if r.get("clarification_field"):
+            meta.append(f"**Asks for:** {r['clarification_field']}")
         if r.get("period"):
             meta.append(f"**Period:** {r['period']}")
         if r.get("record_count"):

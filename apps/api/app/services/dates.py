@@ -121,6 +121,12 @@ def _resolve_relative(expr: str, cal: DatasetCalendar) -> tuple[date, date, str]
         y = a.year - 1
         return date(y, 1, 1), date(y, 12, 31), str(y)
 
+    if expr == "today":
+        return a, a, a.isoformat()
+    if expr == "yesterday":
+        y = a - timedelta(days=1)
+        return y, y, y.isoformat()
+
     if expr in {"last_7_days", "last_30_days", "last_90_days"}:
         days = int(expr.split("_")[1])
         s = a - timedelta(days=days - 1)
