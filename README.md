@@ -11,9 +11,10 @@ records. When the data cannot support an answer, the assistant says so.
 
 Built for the TBX - BVP Tech Catalyst Hackathon.
 
-Measured over 74 turns of a 64-question golden set against
-the offline stub planner on 2026-09-05 (deterministic pipeline only; no live-model
-run exists yet for the bank schema): overall 90.5%, grounding 100%, hallucination-free 100%, masking 100%. See [docs/model-choice.md](docs/model-choice.md).
+Measured over 102 turns of a 73-question golden set against the offline stub
+planner on 2026-09-05 (deterministic pipeline only; no live-model run exists yet
+for the bank schema): overall 100%, grounding 100%, hallucination-free 100%,
+masking 100%, entity scoping 100%. See [docs/model-choice.md](docs/model-choice.md).
 
 ---
 
@@ -21,13 +22,17 @@ run exists yet for the bank schema): overall 90.5%, grounding 100%, hallucinatio
 
 ```
 question
+   ↓
+entity gate              nothing is answered before an entity is chosen; the id
+                         travels as an encrypted token and is shown masked
    ↓  LLM call 1 - emits a typed FinanceQueryPlan (never SQL, never a number)
 Pydantic validation      closed enums; unknown fields rejected
    ↓
-counterparty resolution  deterministic; ambiguity → ask, not guess
+counterparty resolution  deterministic; ambiguous or inexact → ask, not guess
 account resolution       by last four digits; two matches → ask
 date resolution          relative periods anchored to the DATASET, not today
-                         (a list with no period → ask, with a period dropdown)
+                         (no period on a period-sensitive question → ask)
+side resolution          debit, credit or both, when the question did not say
    ↓
 query compiler           allowlisted identifiers, bound parameters only
    ↓
@@ -64,8 +69,9 @@ through which to state a number we did not compute."*
 
 Every question terminates in exactly one. A non-answer state never carries a
 figure or evidence; a clarification carries a dropdown (`clarification.field`
-is `counterparty`, `account`, `date_range` or `guided`) and is answered by
-sending the chosen option as `resolved_value` on the same `conversation_id`:
+is `entity`, `counterparty`, `account`, `date_range`, `transaction_type` or
+`guided`) and is answered by sending the chosen option as `resolved_value`, with
+an optional `resolved_field`, on the same `conversation_id`:
 
 | State | When | Example |
 |---|---|---|
@@ -176,9 +182,10 @@ the same conversation is refused with
 
 and an instruction to clear the history and select the entity ID again, because
 the earlier turns and any parked plan belong to the first entity. The web UI
-enforces the same rule: it prompts for an entity on first load, remembers the
-choice and the transcript across reloads, and refuses a switch until
-**Clear History** (top right) resets both, server-side and in the browser.
+enforces the same rule: the entity is picked from a dropdown before the question
+box unlocks, the choice and the transcript survive navigation and reloads, and a
+switch is refused until **Clear History** (top right) resets both, server-side
+and in the browser.
 
 ### The assistant asks rather than assumes
 
@@ -193,8 +200,14 @@ turn, answered from a dropdown:
 | no period on a period-sensitive intent | Which period should I look at? |
 | debit or credit not stated | Money out, money in, or both? |
 
-"How much did I **spend** with Zomato" states the side, so only the period is
-asked. A balance or a reference lookup is asked for neither.
+Answering one question asks the next thing that is still unknown, so a bare
+"how many transactions have I made with Swiggy" asks which Swiggy, then which
+period, then which side, and only then answers. A stated word counts as stated:
+"how much did I **spend** last month" names both the side and the period, so it
+answers outright. A balance or a reference lookup is asked for neither.
+
+Questions about *which* accounts or banks exist are lookups, not arithmetic:
+they list the accounts and their banks and state no total.
 
 ### Sensitive fields
 
@@ -271,15 +284,23 @@ node scripts/verify/regression.mjs     # G10 cross-check + e2e + error path
 node scripts/verify/security.mjs       # G11 adversarial plans refused
 node scripts/verify/scale.mjs          # G14 20M rows: integrity, latency budget, pruning
 node scripts/verify/masking.mjs        # G15 no full account number in any response
-node scripts/verify/clarify_flow.mjs   # G17 clarification completes the same question
+node scripts/verify/clarify_flow.mjs   # G17 clarification chain completes the question
+node scripts/verify/lint_baseline.mjs  # G26 lint and type debt did not grow
+node scripts/verify/entity_scope.mjs   # G27 entity token, conversation lock, switch refusal
+node scripts/verify/no_assumptions.mjs # G28 period and side are asked, never guessed
+node scripts/verify/entity_ui.mjs      # G29 entity dropdown, persistence, Clear History
 ```
+
+`GATES.md` is the full ledger; every gate names the command that decides it.
 
 Python suites under `apps/api/tests/` (each prints its own pass token):
 `crosscheck.py` (compiler vs. a naive CSV loop), `security.py`, `error_path.py`,
 `e2e_offline.py`, `judge_offline.py`, `crypto_roundtrip.py` (cipher round trip,
-nonce freshness, blind-index determinism, masking; no database) and
+nonce freshness, blind-index determinism, masking; no database),
 `encryption_at_rest.py` (G16: stored ciphertext differs from and decrypts to
-the CSV plaintext, no plaintext column exists).
+the CSV plaintext, no plaintext column exists) and `entity_scope.py` (token
+round trip, the conversation lock, and that two entities give different figures,
+both matching the CSVs).
 
 The cross-checks recompute expected values **from the source CSVs**, by code
 sharing nothing with the application (they may import the narration parser and
@@ -302,10 +323,12 @@ the load. Transactions are partitioned by month and ordered by entity, account
 and date, which is what lets a one-entity, one-month question read a fraction
 of the table.
 
-Measured (G14): 20,000,166 transactions loaded in 481s with
-referential integrity clean and zero duplicate ids; every compiler-shaped query
-answered under 210 ms at that size, and a one-month question read a single row
-thanks to partition pruning. The ClickHouse container carries a small memory
+Measured (G14): 20,000,000 transactions across 400 entities loaded in 1,113s
+with referential integrity clean, zero duplicate ids and 13,003,377 UTRs
+encrypted with their blind index; every compiler-shaped query answered under
+230 ms at that size. One entity's month reads 270k rows rather than 5.2M,
+because date filters bind the raw `transaction_date` as a half-open range: the
+materialised `txn_date` does not prune monthly partitions. The ClickHouse container carries a small memory
 profile (`infra/clickhouse/memory.xml`) because the default 90%-of-RAM ceiling
 was tripped by a bulk load inside Docker Desktop.
 
@@ -313,7 +336,7 @@ was tripped by a bulk load inside Docker Desktop.
 
 ```bash
 python3 scripts/build_golden_set.py    # expected values from data/raw/*.csv, default entity
-python3 scripts/run_evaluation.py      # 64 questions, 74 turns, 16 categories
+python3 scripts/run_evaluation.py      # 73 questions, 102 turns, 18 categories
 python3 scripts/build_sample_questions.py
 ```
 
@@ -322,13 +345,18 @@ and last 7 days), counterparty sums and counts, amount and channel filters,
 lists, largest transactions, top counterparties, balances, reference and UTR
 lookups, follow-up pairs, ambiguous names, and refusals. Expected values are
 computed by `build_golden_set.py` from the CSVs, scoped to the default entity.
-A question expected to clarify is scored on the field asked for, then
-auto-answered with the expected option and the completed answer scored as its
-own turn.
+
+Each item carries an ordered list of the answers a user would give, so the
+runner walks a whole clarification chain: it scores every question asked against
+the field the item expects, answers it, and scores each completed answer as its
+own turn. Fifteen items are deliberate chains - an ambiguous name, an inexact
+name, a missing period, a missing side - and the balance and reference items
+assert they are never asked for a period or a side at all.
 
 Reports state, intent, counterparty, period and clarification accuracy, numeric
 accuracy against the golden values, grounding, verification, hallucination-free
-and masking rates, and efficiency (tokens/turn, escalation rate, p50/p95
+and masking rates, entity scoping (every answer carries the masked entity) and
+entity-id opacity (no raw entity id anywhere in a response body), and efficiency (tokens/turn, escalation rate, p50/p95
 latency). The report records which planner produced it - numbers from a stub
 run measure the deterministic pipeline, not real NLU.
 
@@ -404,7 +432,8 @@ from `.env.example` (notably `CLOUDFLARE_TUNNEL_TOKEN` and `GROQ_API_KEY`).
 ```
 apps/api/app/
   contracts/     typed plan, evidence, response, events - the shared vocabulary
-  services/      compiler, dates, resolver, verification, confidence, composer
+  services/      compiler, dates, resolver, verification, confidence, composer,
+                 crypto, entity_token, narration
   agents/
     pipeline.py           orchestration: what happens, in what order
     planner.py            model call one: plan, validate, escalate
@@ -436,7 +465,7 @@ matter most:
 | `SARVAM_API_KEY` | Optional. Activates the Sarvam AI tier when set; skipped while empty |
 | `TBX_USE_STUB_LLM` | Offline deterministic planner; no API key required |
 | `TBX_DATA_KEY` | 64 hex chars. Encrypts account numbers and UTRs at load; required by the loader and the API |
-| `TBX_DEFAULT_ENTITY` | Optional. Entity a conversation is scoped to when the request names none; default is the busiest |
+| `TBX_DEFAULT_ENTITY` | Optional. The entity flagged as the default in the picker; otherwise the busiest one. A conversation is still scoped only by what the request sends |
 | `QUERY_TIMEOUT_SECONDS`, `MAX_QUERY_ROWS` | Query ceilings |
 | `RATE_LIMIT_PER_MINUTE` | Per-client chat limit |
 
@@ -473,11 +502,23 @@ first, retried with feedback on failure, then a different compliant model, never
 a larger one. Choosing a model pins it for that question; the assistant will not
 silently switch away from a model you picked.
 
+An **Entity** dropdown sits above the conversation. Until one is chosen the
+chat explains why and the question box is disabled; picking one locks it for the
+rest of the conversation and shows it masked, with a Change link that tells you
+to clear the history first. The choice and the transcript survive navigation and
+reloads, keyed on the masked label rather than the token, which is re-encrypted
+on every fetch.
+
+**Clear History**, top right, is the only thing that erases anything. It forgets
+every conversation, drops the stored transcript and the entity, and resets the
+observability counters, server-side and in every open pane.
+
 When the assistant asks a clarifying question, the answer is a dropdown, not
 free text: the two counterparties that match "Swiggy" (with transaction counts
-as hints), the accounts that share a last-four, or six periods when a list
-question names none. Choosing an option completes the same question without a
-second planning call.
+as hints), a confirmation when the name was inexact, the accounts that share a
+last-four, six periods when none was named, or money out / money in / both.
+Choosing an option completes the same question without a second planning call,
+and the assistant asks the next thing it still does not know.
 
 Conversation state, rate limiting, caches and the judge's memory live in Redis.
 For a source-run API outside Docker use `REDIS_URL=redis://127.0.0.1:16379/0`;
@@ -506,20 +547,29 @@ operational counters about the assistant, never financial records.
   20.9B total (3.6B active), which is the nominal 20B class but 0.9B over on a
   strict reading; it is flagged in the log and the dropdown rather than hidden,
   and ALLaM 2 7B is available as a strictly compliant primary.
-- **Model switch rate was 44%** (3.04 LLM
-  calls per turn against a two-call target). Every switch is a measured primary
+- **Model switch rate was 44%** (3.04 LLM calls per turn against a two-call
+  target), measured on the previous dataset with a live model. Every switch is a measured primary
   failure rather than a guess, so the rate is honest, but it is higher than it
   should be. Two causes have already been found and fixed this way; more remain.
   There is no larger model to escalate to any more, so a switch now costs a 7B
   call, not a 120B one.
-- **No live-model evaluation exists yet for the bank schema.** The figures
-  above were measured on the previous dataset; `evaluation/results/latest.json`
-  is a stub-planner run and says so. `scripts/evaluate_when_quota_allows.sh`
-  re-runs the set against a real model once provider quota recovers.
+- **No live-model evaluation exists yet for the bank schema.**
+  `evaluation/results/latest.json` is a stub-planner run and says so, which
+  measures the deterministic pipeline rather than real language understanding.
+  `scripts/evaluate_when_quota_allows.sh` re-runs the set against a real model
+  once provider quota recovers. Both compliant models sit on one provider, so
+  live runs are frequently throttled; a run of mostly rate-limited turns is a
+  quota event, not a regression.
 - **Narrations carry other parties' account numbers.** A NEFT or IMPS
-  description names the counterparty's account, as real statements do. The
-  entity's own numbers are encrypted and masked; the counterparty's, inside
-  narration text, are stored and shown as written.
+  description names the counterparty's account, as real statements do. Those are
+  stored as written, and any run of ten or more digits is masked to its last four
+  before a narration leaves the API, so no full account number reaches a
+  response - the entity's own or anyone else's.
+- **Entity scoping is a product rule, not a tenancy boundary.** A conversation
+  is locked to its entity and every query binds it, but there is no end-user
+  authentication, so anyone with access to the app can select any entity.
+  Database-enforced isolation exists as an opt-in row policy
+  (`infra/clickhouse/004_entity_scoping.sql`) and is not applied by default.
 - The comparison rows in `docs/model-choice.md` are not filled in. One model row
   does not prove a small model was sufficient.
 - Langfuse and the worker are defined in compose behind profiles and are not yet
