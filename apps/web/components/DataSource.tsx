@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowRight, CheckCircle, CircleNotch, Database, LinkSimple, Plugs, WarningOctagon,
@@ -9,7 +10,10 @@ import { getSourceStatus, initializeSource, validateSource, type ConnectionForm 
 import type { IngestProgress, SourceStatus, SourceTableMapping, ValidateResult } from '@/lib/types';
 import { Panel, PanelHead, StatusPill } from './ui';
 
-const EMPTY_FORM: ConnectionForm = { endpoint: '', host: '', port: '', database: '', user: '', password: '' };
+const EMPTY_FORM: ConnectionForm = { endpoint: '', port: '', database: '', user: '', password: '' };
+
+/** How long the success panel stays up before the chatbot opens. */
+const REDIRECT_MS = 2500;
 
 /** Fields the endpoint link can carry on its own (`mysql://user:pass@host:3306/db`). */
 function linkLooksComplete(link: string): boolean {
@@ -156,11 +160,15 @@ export default function DataSource({ initialStatus }: { initialStatus: SourceSta
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<SourceStatus | null>(initialStatus);
   const [starting, setStarting] = useState(false);
+  const [redirecting, setRedirecting] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const redirectedRef = useRef(false);
+  const router = useRouter();
 
   const set = (k: keyof ConnectionForm) => (v: string) => setForm(f => ({ ...f, [k]: v }));
   const linkComplete = linkLooksComplete(form.endpoint);
-  const canSubmit = form.endpoint.trim().length > 0;
+  const canSubmit = Boolean(form.endpoint.trim()) &&
+    (linkComplete || Boolean(form.database.trim() && form.user.trim()));
 
   const validate = useCallback(async (previewTable?: string) => {
     setValidating(true);
@@ -223,6 +231,17 @@ export default function DataSource({ initialStatus }: { initialStatus: SourceSta
   const running = Boolean(progress?.busy);
   const dataAvailable = result?.status === 'data_available';
 
+  /* A finished initialisation hands the user straight to the chatbot, which is now
+     answering from their endpoint. Fires once; the link in the panel is the fallback
+     if the navigation is blocked. */
+  useEffect(() => {
+    if (progress?.state !== 'ready' || redirectedRef.current) return;
+    redirectedRef.current = true;
+    setRedirecting(true);
+    const t = setTimeout(() => router.push('/'), REDIRECT_MS);
+    return () => clearTimeout(t);
+  }, [progress?.state, router]);
+
   return (
     <div className="grid gap-4 lg:grid-cols-[380px_1fr]">
       {/* ---- Left: connection form + initialise ---------------------------- */}
@@ -234,16 +253,25 @@ export default function DataSource({ initialStatus }: { initialStatus: SourceSta
             <Field id="endpoint" label="Endpoint link" value={form.endpoint} onChange={set('endpoint')} mono
               required placeholder="mysql://user:password@host:3306/database" />
             <p className="-mt-1 text-[11px] leading-4 text-muted">
-              Include user, password, host, port and database in the link. It connects as soon as
-              the link is complete.
+              A link carrying user, password, port and database connects on its own. Otherwise give
+              the host here and fill in the rest below; these fields override the link.
             </p>
+            <div className="grid grid-cols-[1fr_88px] gap-3">
+              <Field id="database" label="Database" value={form.database} onChange={set('database')} mono
+                placeholder="finance" required={!linkComplete} />
+              <Field id="port" label="Port" value={form.port} onChange={set('port')} mono placeholder="3306" />
+            </div>
+            <Field id="user" label="User" value={form.user} onChange={set('user')} autoComplete="username"
+              placeholder="readonly_user" required={!linkComplete} />
+            <Field id="password" label="Password" value={form.password} onChange={set('password')}
+              type="password" autoComplete="current-password" />
             <div className="flex items-center gap-2 pt-1">
               <button type="submit" disabled={validating || running || !canSubmit}
                 className="inline-flex h-[36px] items-center gap-1.5 rounded border border-line bg-raised px-3
                            text-[13px] font-medium text-ink transition-colors hover:border-accent
                            disabled:opacity-40">
                 {validating ? <CircleNotch size={14} className="spin" aria-hidden /> : <Plugs size={14} aria-hidden />}
-                {validating ? 'Checking…' : 'Validate link'}
+                {validating ? 'Connecting…' : 'Connect'}
               </button>
               {result && (
                 result.status === 'data_available'
@@ -294,7 +322,7 @@ export default function DataSource({ initialStatus }: { initialStatus: SourceSta
               </p>
               <Link href="/"
                 className="mt-2 inline-flex items-center gap-1.5 text-[13px] font-medium text-accent hover:underline">
-                Start asking questions <ArrowRight size={14} aria-hidden />
+                {redirecting ? 'Opening the chatbot…' : 'Start asking questions'} <ArrowRight size={14} aria-hidden />
               </Link>
             </div>
           )}
@@ -327,6 +355,14 @@ export default function DataSource({ initialStatus }: { initialStatus: SourceSta
 
         {result?.connected && (
           <>
+            <div className="flex items-center gap-2 rounded border border-good/30 bg-good/10 px-3.5 py-2.5 text-[13px]">
+              <CheckCircle size={16} weight="fill" className="text-good shrink-0" aria-hidden />
+              <span>
+                Database connected &mdash; <span className="font-mono">{result.target.database}</span> on{' '}
+                <span className="font-mono">{result.target.host}:{result.target.port}</span>, {result.table_count}{' '}
+                table{result.table_count === 1 ? '' : 's'} available.
+              </span>
+            </div>
             <Panel>
               <PanelHead title="Tables"
                 meta={<>

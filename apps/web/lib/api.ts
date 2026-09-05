@@ -102,8 +102,10 @@ export const getJudge = () => getJson<JudgeSummary>('/api/v1/admin/judge', 'judg
 
 /* ---- Data Source --------------------------------------------------------- */
 
+/** The Data Source form. `endpoint` is either a full link or a bare host; the other
+ *  fields fill in whatever the link does not carry, and override it when it does. */
 export interface ConnectionForm {
-  endpoint: string; host: string; port: string; database: string; user: string; password: string;
+  endpoint: string; port: string; database: string; user: string; password: string;
 }
 
 async function readError(r: Response): Promise<string> {
@@ -120,7 +122,7 @@ export async function validateSource(form: ConnectionForm, previewTable?: string
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      endpoint: form.endpoint, host: form.host, port: form.port ? Number(form.port) : null,
+      endpoint: form.endpoint, host: '', port: form.port ? Number(form.port) : null,
       database: form.database, user: form.user, password: form.password,
       preview_table: previewTable ?? null,
     }),
