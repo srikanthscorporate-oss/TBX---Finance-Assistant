@@ -1,0 +1,6 @@
+services:
+  postgres:
+    # Opt-in public database listener. Use an IP/CIDR-specific firewall rule
+    # whenever the consumers have stable public IP addresses.
+    ports:
+      - "${POSTGRES_HOST_BIND:-0.0.0.0}:${POSTGRES_HOST_PORT:-5432}:5432"

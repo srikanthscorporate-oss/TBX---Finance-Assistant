@@ -16,6 +16,16 @@ Only Nginx publishes ports on the host: HTTP (`80`) redirects to HTTPS (`443`). 
 
 Do not expose PostgreSQL, Redis, ClickHouse, Prometheus, Loki, Tempo, or the OTLP Collector to the public internet.
 
+### Optional external PostgreSQL access
+
+The base stack keeps PostgreSQL private. If an external client genuinely needs direct database access, use the opt-in override:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.public-postgres.yml up -d postgres
+```
+
+This publishes port `5432`. Keep SSL/password authentication enabled and restrict the VM firewall to known client IP addresses whenever possible. Connect with the `app` database user and the `POSTGRES_PASSWORD` value from the server’s private `.env` file.
+
 TBX uses the pinned AMD64-compatible `v1` Docker Hub tags: `web` serves on container port 3000 and `api` on 8000. The API diagnostic port is bound only to `127.0.0.1:18000`; public traffic is routed exclusively through Nginx. The current API `v1` image does not include `app.worker`, so the worker is held behind the `tbx-worker` profile until a worker-capable image is published.
 
 Before the API reports healthy, provision and populate the ClickHouse `tbx_finance` schema. The API requires `tbx_finance.transactions`, `tbx_finance.vendors`, and `tbx_finance.dataset_versions`; it intentionally returns HTTP 503 until the financial dataset is loaded. Run the project’s dataset migration/loader with the ClickHouse credentials configured for this host—do not create placeholder financial data in production.
