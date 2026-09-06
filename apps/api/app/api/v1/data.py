@@ -14,7 +14,7 @@ from ...services.compiler import compile_plan
 from ...services import entity_token
 from ...services.dates import resolve
 from ...agents.context import DatasetContext
-from ...db.clickhouse import ClickHouseClient
+from ...db.mysql import MySQLClient
 from ...state import app_state
 
 router = APIRouter(prefix="/api/v1", tags=["data"])
@@ -36,7 +36,7 @@ def _entity(token: str | None, ctx: DatasetContext) -> str | None:
         raise HTTPException(400, "unrecognised entity token") from None
 
 
-def _ch() -> ClickHouseClient:
+def _ch() -> MySQLClient:
     if app_state.ch is None:
         raise HTTPException(503, "dataset not loaded")
     return app_state.ch

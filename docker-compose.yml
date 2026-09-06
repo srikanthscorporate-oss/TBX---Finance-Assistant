@@ -31,93 +31,25 @@ services:
     ports:
       - "8080:80"          # local access; Cloudflare Tunnel is the prod path
     networks: [edge, app]
-    depends_on: [api, web]
+    # api and web run as local processes (see start.sh); nginx reaches them on the host.
+    extra_hosts: ["host.docker.internal:host-gateway"]
     logging: *default-logging
 
   # ---- Application -------------------------------------------------------
-  api:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
-    image: tbx-api:${IMAGE_TAG:-dev}
-    platform: linux/amd64
-    restart: unless-stopped
-    env_file: [.env]
-    environment:
-      TBX_ROLE: api
-      TBX_EVAL_REPORT: /srv/evaluation/results/latest.json
-    volumes:
-      # Read-only so the dashboard reflects the latest local evaluation run
-      # without the report being baked into the image.
-      - ./evaluation/results:/srv/evaluation/results:ro
-    ports:
-      # Loopback only: for local evaluation runs that must bypass the public
-      # rate limiter. Not reachable off-host and not routed through the tunnel.
-      - "127.0.0.1:18000:8000"
-    networks: [app, data, observability]
-    depends_on:
-      clickhouse: { condition: service_healthy }
-      mysql:      { condition: service_healthy }
-      redis:      { condition: service_healthy }
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    logging: *default-logging
-
-  worker:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
-    image: tbx-api:${IMAGE_TAG:-dev}
-    platform: linux/amd64
-    restart: unless-stopped
-    command: ["python", "-m", "app.worker"]
-    env_file: [.env]
-    environment:
-      TBX_ROLE: worker
-    networks: [app, data, observability]
-    depends_on:
-      redis: { condition: service_healthy }
-    logging: *default-logging
-
-  web:
-    build:
-      context: ./apps/web
-      dockerfile: Dockerfile
-    image: tbx-web:${IMAGE_TAG:-dev}
-    platform: linux/amd64
-    restart: unless-stopped
-    env_file: [.env]
-    environment:
-      NODE_ENV: production
-      NEXT_PUBLIC_API_BASE: ''
-      INTERNAL_API_BASE: http://api:8000
-    networks: [app]
-    logging: *default-logging
-
-  # ---- Data tier ---------------------------------------------------------
   clickhouse:
     image: clickhouse/clickhouse-server:24.8-alpine
     restart: unless-stopped
+    profiles: ["observability"]
     environment:
-      CLICKHOUSE_USER: ${CH_ADMIN_USER}
-      CLICKHOUSE_PASSWORD: ${CH_ADMIN_PASSWORD}
-      CLICKHOUSE_DB: ${CH_DB}
+      CLICKHOUSE_USER: ${CH_ADMIN_USER:-tbx_admin}
+      CLICKHOUSE_PASSWORD: ${CH_ADMIN_PASSWORD:-change-me-admin}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
-      CH_AGENT_PASSWORD: ${CH_AGENT_PASSWORD}
     ulimits:
       nofile: { soft: 262144, hard: 262144 }
     volumes:
       - clickhouse_data:/var/lib/clickhouse
-      - ./infra/clickhouse/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
-      - ./infra/clickhouse/002_readonly_user.sql:/docker-entrypoint-initdb.d/002_readonly_user.sql.tpl:ro
-      - ./infra/clickhouse/init-agent-user.sh:/docker-entrypoint-initdb.d/003_agent_user.sh:ro
       - ./infra/clickhouse/memory.xml:/etc/clickhouse-server/config.d/memory.xml:ro
-    networks: [data]
-    ports: ["18123:8123"]   # local dev only; remove on the VPS
+    networks: [observability]
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
       interval: 10s
@@ -126,14 +58,13 @@ services:
       start_period: 20s
     logging: *default-logging
 
-  # MySQL is the application-state store and the reference target for the
-  # Data Source page: point the page at this service (host `mysql`, port 3306)
-  # to try the bring-your-own-endpoint flow locally. A user-supplied MySQL
-  # endpoint becomes the assistant's dataset once initialised.
+  # Optional local MySQL for offline demos: seed it with scripts/seed_mysql.py and
+  # point MYSQL_HOST at `mysql`. Not started by default; the live source is remote.
   mysql:
     image: mysql:8.4
     restart: unless-stopped
-    command: ["mysqld", "--mysql-native-password=ON", "--innodb-buffer-pool-size=256M"]
+    profiles: ["local-mysql"]
+    command: ["mysqld", "--mysql-native-password=ON", "--innodb-buffer-pool-size=1536M", "--innodb-redo-log-capacity=512M", "--innodb-flush-log-at-trx-commit=0"]
     environment:
       MYSQL_DATABASE: ${MYSQL_DB}
       MYSQL_USER: ${MYSQL_USER}

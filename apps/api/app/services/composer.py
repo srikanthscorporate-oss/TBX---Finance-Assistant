@@ -188,8 +188,11 @@ def template_answer(evidence: EvidencePackage, intent: str) -> ComposedAnswer | 
         if len(evidence.breakdown) > 1:
             others = ", ".join(b.label for b in evidence.breakdown[1:4])
             rest = f" Next were {others}."
+        # The count is the top counterparty's own, never the total across the groups shown.
+        top_n = f["top_count"].formatted if "top_count" in f else None
+        across = f" across {top_n} transactions" if top_n else ""
         text = (f"You {verb} {f['top_label'].formatted}{when}{where}: "
-                f"{f['top_value'].formatted} across {n:,} transactions in total.{rest}")
+                f"{f['top_value'].formatted}{across}.{rest}")
     elif intent == "account_list" and evidence.records:
         rows = evidence.records[:8]
         listed = "; ".join(f"{r.get('account')} at {r.get('bank')}" for r in rows)

@@ -1,5 +1,5 @@
 """FinanceQueryPlan: the only model output that influences a query. The compiler turns a
-validated plan into a parameterized ClickHouse query."""
+validated plan into a parameterized SQL query."""
 from __future__ import annotations
 
 from datetime import date

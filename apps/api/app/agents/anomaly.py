@@ -7,9 +7,12 @@ from __future__ import annotations
 import statistics
 from dataclasses import dataclass
 
-from ..db.clickhouse import ClickHouseClient, QueryError
+from ..db.mysql import MySQLClient, QueryError
+from ..services import derived_sql as dsql
 from ..services import composer as comp
-from ..services.active_db import active_db
+
+ANOMALY_TIMEOUT_S = 12
+"""Seconds the history query may take before the remark is dropped."""
 
 MIN_HISTORY = 4
 Z_THRESHOLD = 2.5
@@ -25,18 +28,26 @@ class Anomaly:
     sentence: str | None
 
 
-def check(ch: ClickHouseClient, counterparty: str, entity_id: str | None,
+def check(ch: MySQLClient, counterparty: str, entity_id: str | None,
           start, end, current_value: float, currency: str | None) -> Anomaly:
-    sql = ("SELECT toStartOfMonth(txn_date) AS m, sum(transaction_amount) AS v "
-           f"FROM {active_db()}.transaction WHERE counterparty = {{counterparty:String}} "
-           "AND transaction_type = 'debit' AND txn_date < {start:Date}"
-           + (" AND entity_id = {entity_id:String}" if entity_id else "")
+    """A side remark, so it is bounded twice: six months of history before the period,
+    and its own short statement timeout. On the live link a slow history query
+    simply yields no remark; it can never hold up the answer."""
+    fast = MySQLClient(ch.target, timeout=ANOMALY_TIMEOUT_S, max_result_rows=64)
+    month = ("DATE_SUB(DATE(t.transaction_date), "
+             "INTERVAL DAYOFMONTH(t.transaction_date) - 1 DAY)")
+    sql = (f"SELECT {month} AS m, SUM(t.transaction_amount) AS v "
+           "FROM `transaction` AS t JOIN `account` AS a ON a.account_id = t.account_id "
+           f"WHERE {dsql.counterparty('t')} = %(counterparty)s "
+           "AND t.transaction_type = 'debit' AND t.transaction_date < %(start)s "
+           "AND t.transaction_date >= DATE_SUB(%(start)s, INTERVAL 6 MONTH)"
+           + (" AND a.entity_id = %(entity_id)s" if entity_id else "")
            + " GROUP BY m ORDER BY m")
     params = {"counterparty": counterparty, "start": start}
     if entity_id:
         params["entity_id"] = entity_id
     try:
-        rows = ch.query(sql, params).rows
+        rows = fast.query(sql, params).rows
     except QueryError:
         return Anomaly(False, None, None, 0, None, None)
     hist = [float(r["v"]) for r in rows if r.get("v") is not None]

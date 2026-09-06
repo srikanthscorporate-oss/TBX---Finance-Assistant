@@ -2,8 +2,11 @@
 # Usage:
 #   ./start.sh            start (installs Docker if missing, loads data if empty)
 #   ./start.sh --prod     also start the Cloudflare tunnel (needs CLOUDFLARE_TUNNEL_TOKEN)
-#   ./start.sh --stop     stop all services (data volumes are kept)
-#   ./start.sh --logs     follow api + web logs
+#   ./start.sh --stop     stop the local api/web processes and the docker services (volumes kept)
+#   ./start.sh --logs     follow the local api + web logs
+#
+# The API (uvicorn) and the web app (Next.js) run as local processes; Redis, the
+# optional local MySQL copy and nginx run in Docker. nginx on :8080 proxies to them.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -78,8 +81,13 @@ fi
 docker compose version >/dev/null 2>&1 || die "the Docker Compose plugin is missing (docker compose version)"
 
 case "$MODE" in
-  --stop) say "stopping services (volumes kept)"; docker compose --profile prod stop; exit 0 ;;
-  --logs) exec docker compose logs -f api web ;;
+  --stop)
+    say "stopping local api/web and docker services (volumes kept)"
+    for f in .run/api.pid .run/web.pid; do
+      [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null && rm -f "$f"
+    done
+    docker compose --profile prod --profile local-mysql stop; exit 0 ;;
+  --logs) exec tail -f .run/api.log .run/web.log ;;
   --prod|start) ;;
   *) die "unknown option: $MODE (use --prod, --stop, --logs)" ;;
 esac
@@ -106,52 +114,65 @@ else
   HOSTROOT="$ROOT"
 fi
 
-say "starting ClickHouse, MySQL, Redis"
-docker compose up -d clickhouse mysql redis
-say "waiting for ClickHouse"
-for _ in $(seq 1 60); do
-  docker compose exec -T clickhouse wget -qO- http://127.0.0.1:8123/ping 2>/dev/null | grep -q Ok && break
-  sleep 3
-done
-docker compose exec -T clickhouse wget -qO- http://127.0.0.1:8123/ping 2>/dev/null | grep -q Ok || die "ClickHouse did not become healthy"
+say "starting Redis"
+docker compose up -d redis
 
-# Dataset scripts run in a container on the compose network; the host needs no Python.
-NET="$(docker network ls --format '{{.Name}}' | grep -E '_data$' | head -1)"
-PYRUN() { docker run --rm --network "$NET" -e TBX_DATA_KEY -v "${HOSTROOT}:/w" -w /w python:3.12-slim sh -c 'pip install -q "cryptography>=43" >/dev/null && exec python "$@"' -- "$@"; }
-
-if [ ! -f data/raw/transaction.csv ]; then
-  say "no dataset in data/raw; generating a stand-in"
-  PYRUN scripts/generate_bank_dataset.py --out data/raw
-fi
-CH_USER="$(grep -E '^CH_ADMIN_USER=' .env | cut -d= -f2)"; CH_PASS="$(grep -E '^CH_ADMIN_PASSWORD=' .env | cut -d= -f2)"
-ROWS="$(docker compose exec -T clickhouse clickhouse-client --user "${CH_USER:-tbx_admin}" --password "${CH_PASS:-change-me-admin}" -q 'SELECT count() FROM tbx_finance.transaction' 2>/dev/null || echo 0)"
-if [ "${ROWS:-0}" -eq 0 ]; then
-  say "loading the dataset into ClickHouse"
-  DATA_KEY="$(grep -E '^TBX_DATA_KEY=' .env | cut -d= -f2)"
-  [ -n "$DATA_KEY" ] || die "TBX_DATA_KEY missing from .env; generate one with: python3 -c 'import os;print(os.urandom(32).hex())'"
-  TBX_DATA_KEY="$DATA_KEY" PYRUN scripts/load_dataset.py --raw data/raw --url http://clickhouse:8123 --user "${CH_USER:-tbx_admin}" --password "${CH_PASS:-change-me-admin}"
-else
-  say "dataset already loaded (${ROWS} transactions)"
+# The assistant answers live from the MySQL endpoint in .env (MYSQL_*); nothing is
+# loaded locally. Check it is reachable before building so a bad endpoint fails fast.
+MYSQL_HOST_V="$(grep -E '^MYSQL_HOST=' .env | cut -d= -f2)"; MYSQL_PORT_V="$(grep -E '^MYSQL_PORT=' .env | cut -d= -f2)"
+[ -n "$MYSQL_HOST_V" ] || die "MYSQL_HOST missing from .env; the assistant needs a live MySQL source"
+if [ "$MYSQL_HOST_V" = "mysql" ]; then
+  say "starting the local MySQL copy"
+  docker compose --profile local-mysql up -d mysql
+  for _ in $(seq 1 60); do
+    docker compose exec -T mysql mysqladmin ping -h127.0.0.1 --silent 2>/dev/null && break
+    sleep 2
+  done
+elif command -v nc >/dev/null 2>&1; then
+  say "checking the MySQL source at ${MYSQL_HOST_V}:${MYSQL_PORT_V:-3306}"
+  nc -z -w 5 "$MYSQL_HOST_V" "${MYSQL_PORT_V:-3306}" || die "MySQL source ${MYSQL_HOST_V}:${MYSQL_PORT_V:-3306} is not reachable"
 fi
 
-say "building and starting api, web, nginx"
-docker compose up -d --build api web nginx
+say "starting nginx"
+docker compose up -d nginx
 if [ "$MODE" = "--prod" ]; then
   say "starting the Cloudflare tunnel"
   docker compose --profile prod up -d cloudflared
 fi
 
+# ---- local processes -------------------------------------------------------
+mkdir -p .run
+set -a; . ./.env; set +a
+export REDIS_URL="redis://127.0.0.1:16379/0"
+# The compose MySQL is published on the loopback for host processes.
+if [ "$MYSQL_HOST" = "mysql" ]; then export MYSQL_HOST=127.0.0.1 MYSQL_PORT=13306; fi
+
+say "starting the API on :8010 (uv)"
+command -v uv >/dev/null 2>&1 || die "uv is required: https://docs.astral.sh/uv/"
+( cd apps/api && uv sync -q && \
+  nohup uv run uvicorn app.main:app --host 127.0.0.1 --port 8010 > ../../.run/api.log 2>&1 &
+  echo $! > ../../.run/api.pid )
+
+say "starting the web app on :3000 (npm)"
+command -v npm >/dev/null 2>&1 || die "npm is required"
+( cd apps/web && [ -d node_modules ] || npm ci --silent
+  if [ "$MODE" = "--prod" ]; then npm run build --silent; WEB_CMD="npm run start"; else WEB_CMD="npm run dev"; fi
+  INTERNAL_API_BASE=http://127.0.0.1:8010 API_PROXY_TARGET=http://127.0.0.1:8010 \
+    nohup sh -c "$WEB_CMD" > ../../.run/web.log 2>&1 &
+  echo $! > ../../.run/web.pid )
+
 say "waiting for the API"
 for _ in $(seq 1 60); do
-  docker compose exec -T nginx wget -qO- http://127.0.0.1/health 2>/dev/null | grep -q '"ready":true' && break
-  sleep 3
+  curl -sf http://127.0.0.1:8010/health 2>/dev/null | grep -q '"ready":true' && break
+  sleep 2
 done
-docker compose exec -T nginx wget -qO- http://127.0.0.1/health 2>/dev/null | grep -q '"ready":true' || {
-  docker compose logs --tail 40 api; die "the API never reported ready"; }
+curl -sf http://127.0.0.1:8010/health 2>/dev/null | grep -q '"ready":true' || {
+  tail -40 .run/api.log; die "the API never reported ready"; }
 
 docker compose ps --format 'table {{.Service}}\t{{.Status}}'
 say "ready"
 echo "   chat:           http://localhost:8080"
 echo "   observability:  http://localhost:8080/observability"
 [ "$MODE" = "--prod" ] && echo "   production:     https://$(grep -E '^TBX_DOMAIN=' .env | cut -d= -f2)"
+echo "   api (local):    http://127.0.0.1:8010    web (local): http://localhost:3000"
 echo "   stop:           ./start.sh --stop     logs: ./start.sh --logs"

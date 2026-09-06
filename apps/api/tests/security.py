@@ -158,18 +158,13 @@ except CompilationError:
 
 plan = FinanceQueryPlan(intent=Intent.REFERENCE_LOOKUP, reference="UTR123456789",
                         reference_kind=ReferenceKind.UTR)
-try:
-    compile_plan(plan)
-    check("UTR lookup without blind index refused", False, "compiled")
-except CompilationError:
-    check("UTR lookup without blind index refused", True)
-cq = compile_plan(plan, utr_hash="ab" * 32)
-check("UTR lookup binds the hash, never the plaintext",
-      "UTR123456789" not in cq.sql and "UTR123456789" not in cq.params.values()
-      and cq.params.get("utr_hash") == "ab" * 32 and "utr_hash" in cq.sql)
-check("UTR hash is truncated in the evidence display",
-      cq.display()["params"]["utr_hash"] != "ab" * 32
-      and cq.display()["params"]["utr_hash"].endswith("…"))
+cq = compile_plan(plan)
+check("UTR lookup binds the value; the SQL text never contains it",
+      "UTR123456789" not in cq.sql and cq.params.get("utr") == "UTR123456789"
+      and "%(utr)s" in cq.sql)
+check("UTR is truncated in the evidence display",
+      cq.display()["params"]["utr"] != "UTR123456789"
+      and cq.display()["params"]["utr"].endswith("…"))
 
 plan = FinanceQueryPlan(intent=Intent.SPEND_SUMMARY, date_range=DateRange(relative="last_month"))
 try:
@@ -197,19 +192,21 @@ for intent in Intent:
     for word in FORBIDDEN:
         check(f"{intent.value} has no {word}", word not in upper, cq.sql[:120])
     check(f"{intent.value} is one statement", ";" not in cq.sql, cq.sql[:120])
-    dbs = set(re.findall(r"FROM\s+(\w+)\.", cq.sql))
-    check(f"{intent.value} reads only tbx_finance", dbs == {"tbx_finance"}, f"dbs: {dbs}")
-    check(f"{intent.value} never selects account_number_enc",
-          "account_number_enc" not in cq.sql and "account_number" not in cq.sql, cq.sql[:160])
-    check(f"{intent.value} has no plaintext utr parameter",
-          "utr" not in {k.lower() for k in cq.params} and "utr_number" not in cq.sql)
+    tables = set(re.findall(r"(?:FROM|JOIN)\s+`(\w+)`", cq.sql))
+    check(f"{intent.value} reads only the canonical tables", tables <= {"transaction", "account"}
+          and not re.search(r"(?:FROM|JOIN)\s+\w+\.", cq.sql), f"tables: {tables}")
+    check(f"{intent.value} never selects account_number in any form",
+          "account_number" not in cq.sql, cq.sql[:160])
+    check(f"{intent.value} never binds a UTR unless the user looked one up",
+          intent is Intent.REFERENCE_LOOKUP or "utr" not in {k.lower() for k in cq.params})
     check(f"{intent.value} row limit is bound and capped",
           "row_limit" not in cq.params or int(cq.params["row_limit"]) <= 1000)
-    check(f"{intent.value} has no unbound braces",
-          all(re.fullmatch(r"\w+:[\w()]+", m) for m in re.findall(r"\{([^{}]*)\}", cq.sql)),
+    placeholders = set(re.findall(r"%\((\w+)\)s", cq.sql))
+    check(f"{intent.value} has no stray percent formatting",
+          all(re.fullmatch(r"%\(\w+\)s|%%", m) for m in re.findall(r"%\(\w+\)s|%%|%", cq.sql)),
           cq.sql[:160])
     check(f"{intent.value} params all bound in sql",
-          all(f"{{{k}:" in cq.sql for k in cq.params), f"{list(cq.params)} vs {cq.sql[:160]}")
+          placeholders == set(cq.params), f"{sorted(placeholders)} vs {sorted(cq.params)}")
 
 for group in GroupBy:
     if group is GroupBy.NONE:
@@ -231,8 +228,8 @@ check("limit at cap stays at cap", compile_plan(
 def fake_compile(plan: FinanceQueryPlan) -> CompiledQuery:
     """A deliberately broken compiler that concatenates the counterparty into the SQL."""
     return CompiledQuery(
-        sql=f"SELECT sum(transaction_amount) FROM tbx_finance.transaction "
-            f"WHERE counterparty = '{plan.counterparty}'",
+        sql=f"SELECT SUM(transaction_amount) FROM `transaction` "
+            f"WHERE description = '{plan.counterparty}'",
         params={}, kind="aggregate")
 
 

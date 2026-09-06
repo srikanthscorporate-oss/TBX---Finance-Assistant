@@ -103,7 +103,7 @@ async def evaluations() -> dict[str, Any]:
 async def health() -> dict[str, Any]:
     ch_ok = bool(app_state.ch and app_state.ch.ping())
     return {
-        "clickhouse": "up" if ch_ok else "down",
+        "mysql": "up" if ch_ok else "down",
         "dataset_loaded": app_state.ready,
         "dataset_version": app_state.ctx.dataset_version if app_state.ctx else None,
         "conversations_in_memory": len(app_state.conversations),

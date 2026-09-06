@@ -11,6 +11,15 @@ records. When the data cannot support an answer, the assistant says so.
 
 Built for the TBX - BVP Tech Catalyst Hackathon.
 
+> **Current data path (live MySQL).** The assistant answers directly from the
+> MySQL server configured in `.env` (`MYSQL_*`), with no ClickHouse and no local
+> copy of the data. The compiler emits MySQL (`apps/api/app/services/compiler.py`),
+> `counterparty` and `channel` are derived in SQL (`services/derived_sql.py`), and
+> every statement is bounded by `QUERY_TIMEOUT_SECONDS`. The sections below that
+> describe the ClickHouse loader, `data/raw` and the CSV-based gates document the
+> earlier architecture; `CLAUDE.md` and `.unlazy/live-mysql/GATES.md` describe
+> what runs now.
+
 Measured over 102 turns of a 73-question golden set against the offline stub
 planner on 2026-09-05 (deterministic pipeline only; no live-model run exists yet
 for the bank schema): overall 100%, grounding 100%, hallucination-free 100%,

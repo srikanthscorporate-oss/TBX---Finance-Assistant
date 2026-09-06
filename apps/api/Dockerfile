@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 #
 # Build context is the REPOSITORY ROOT (see docker-compose.yml): the image needs
 # both apps/api and the top-level prompts/ directory.

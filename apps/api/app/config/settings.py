@@ -14,24 +14,21 @@ def _int(name: str, default: int) -> int:
 
 @dataclass
 class Settings:
-    """`ch_user` is the read-only agent user; only the ingestion script uses the admin user."""
+    """Connection facts for the live source come from MYSQL_*; nothing is ever written to it."""
     env: str = field(default_factory=lambda: os.getenv("TBX_ENV", "development"))
     domain: str = field(default_factory=lambda: os.getenv("TBX_DOMAIN", "localhost"))
     dataset_version: str = field(default_factory=lambda: os.getenv("DATASET_VERSION", "unknown"))
 
-    ch_host: str = field(default_factory=lambda: os.getenv("CH_HOST", "clickhouse"))
-    ch_port: int = field(default_factory=lambda: _int("CH_PORT", 8123))
-    ch_db: str = field(default_factory=lambda: os.getenv("CH_DB", "tbx_finance"))
-    ch_user: str = field(default_factory=lambda: os.getenv("CH_AGENT_USER", "tbx_agent"))
-    ch_password: str = field(default_factory=lambda: os.getenv("CH_AGENT_PASSWORD", ""))
-    # Writes only: ingesting a user-supplied MySQL source (services/ingest.py).
-    ch_admin_user: str = field(default_factory=lambda: os.getenv("CH_ADMIN_USER", "tbx_admin"))
-    ch_admin_password: str = field(
-        default_factory=lambda: os.getenv("CH_ADMIN_PASSWORD", ""))
+    # The live MySQL source the assistant answers from. Read-only account expected.
+    mysql_host: str = field(default_factory=lambda: os.getenv("MYSQL_HOST", "mysql"))
+    mysql_port: int = field(default_factory=lambda: _int("MYSQL_PORT", 3306))
+    mysql_db: str = field(default_factory=lambda: os.getenv("MYSQL_DB", "tbx_app"))
+    mysql_user: str = field(default_factory=lambda: os.getenv("MYSQL_USER", "tbx"))
+    mysql_password: str = field(default_factory=lambda: os.getenv("MYSQL_PASSWORD", ""))
 
     redis_url: str = field(default_factory=lambda: os.getenv("REDIS_URL", "redis://redis:6379/0"))
 
-    query_timeout: int = field(default_factory=lambda: _int("QUERY_TIMEOUT_SECONDS", 10))
+    query_timeout: int = field(default_factory=lambda: _int("QUERY_TIMEOUT_SECONDS", 90))
     max_query_rows: int = field(default_factory=lambda: _int("MAX_QUERY_ROWS", 1000))
     llm_timeout: int = field(default_factory=lambda: _int("LLM_TIMEOUT_SECONDS", 20))
     rate_limit_per_minute: int = field(default_factory=lambda: _int("RATE_LIMIT_PER_MINUTE", 30))

@@ -6,13 +6,13 @@ from typing import Callable, Iterable
 
 from pydantic import ValidationError
 
-from ..contracts.enums import (GroupBy, Intent, Metric, ReferenceKind, ResponseState,
+from ..contracts.enums import (GroupBy, Intent, Metric, ResponseState,
                               TransactionType)
 from ..contracts.evidence import EvidencePackage
 from ..llm.router import AllModelsRateLimited, Tier
 from ..contracts.events import AgentEvent, EventType
 from ..contracts.response import AssistantResponse, Clarification, ClarificationOption
-from ..db.clickhouse import ClickHouseClient, QueryError
+from ..db.mysql import MySQLClient, QueryError
 from ..llm.router import ModelRouter, ModelSpec
 from ..services import confidence as conf
 from ..services import verification as verif
@@ -67,7 +67,7 @@ __all__ = ["Pipeline", "ConversationState", "DatasetContext", "RunContext", "CAP
 
 
 class Pipeline:
-    def __init__(self, ch: ClickHouseClient, router: ModelRouter, ctx: DatasetContext,
+    def __init__(self, ch: MySQLClient, router: ModelRouter, ctx: DatasetContext,
                  on_event: Callable[[AgentEvent], None] | None = None,
                  judge: Judge | None = None):
         self.ch = ch
@@ -346,14 +346,9 @@ class Pipeline:
             self._judge_record(rc, resp, cache_hit="answer")
             return resp
 
-        utr_hash = None
-        if plan.reference and plan.reference_kind is ReferenceKind.UTR:
-            if self.cipher is None:
-                return self._respond(rc, ResponseState.ERROR,
-                                     message="UTR lookup is not available: the data key is not configured.")
-            utr_hash = self.cipher.blind_index(plan.reference)
+        # The live source stores the UTR in plaintext; the compiler binds the value itself.
         try:
-            cq = compile_plan(plan, utr_hash=utr_hash)
+            cq = compile_plan(plan)
         except CompilationError as e:
             rc.emit(EventType.RUN_FAILED, "Could not compile query", error=str(e))
             return self._respond(rc, ResponseState.ERROR,

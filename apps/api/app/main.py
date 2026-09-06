@@ -114,6 +114,6 @@ async def health():
         "counterparties": len(app_state.ctx.counterparties) if app_state.ctx else 0,
         "accounts": len(app_state.ctx.accounts) if app_state.ctx else 0,
         "planner": "stub" if os.getenv("TBX_USE_STUB_LLM") == "1" else "model",
-        "source": f"mysql:{app_state.source.database}" if app_state.source else "bundled",
+        "source": app_state.source.label if app_state.source else None,
     }
     return JSONResponse(body, status_code=200 if ready else 503)

@@ -32,3 +32,5 @@ apps/web/tsconfig.tsbuildinfo
 *.tsbuildinfo
 
 /docs
+.run/
+.unlazy/

@@ -1,17 +1,21 @@
-"""Bring-your-own MySQL data source: validate, inspect, initialise.
+"""Live MySQL data source: validate, connect, status.
 
-Three steps, matching the Data Source page:
+The assistant answers directly from a MySQL server; nothing is copied. The Data
+Source page validates an endpoint, then `connect` makes it the live source in one
+step: the client is swapped, the dataset context is re-read from the new server,
+and only if that succeeds does the switch commit.
 
-  POST /api/v1/sources/validate    is the endpoint live, and what is in it?
-  POST /api/v1/sources/initialize  ingest it and make it the assistant's dataset
-  GET  /api/v1/sources/status      progress, then the active source
+  POST /api/v1/sources/validate    is the endpoint live, and does it have the schema?
+  POST /api/v1/sources/initialize  make it the live source (kept under its old name
+                                   so the page's button still works)
+  GET  /api/v1/sources/status      the active source
+  POST /api/v1/sources/reset       back to the endpoint configured in MYSQL_*
 
 Credentials are held in memory only, for the life of the process, and are never
 returned: `validate` hands back an opaque token that `initialize` redeems.
 """
 from __future__ import annotations
 
-import contextlib
 import logging
 import secrets
 from typing import Any
@@ -19,20 +23,29 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from ...db.mysql import MySQLTarget
 from ...services import mysql_source as ms
-from ...services.active_db import active_db, is_bundled, set_active_db
-from ...services.ingest import IngestError, Ingestor
-from ...services.source_mapping import build_mapping
 from ...state import (
     app_state,
     clear_active_source,
-    rebuild_dataset_context,
-    save_active_source,
+    connect_source,
+    env_target,
 )
 
 log = logging.getLogger("tbx.sources")
 
 router = APIRouter(prefix="/api/v1/sources", tags=["sources"])
+
+LIVE_COLUMNS: dict[str, list[str]] = {
+    "bank": ["bank_code", "bank_name"],
+    "account": ["account_id", "entity_id", "account_number", "program_id",
+                "available_balance", "bank_code"],
+    "transaction": ["transaction_id", "account_id", "transaction_date", "transaction_type",
+                    "description", "transaction_amount", "transaction_reference_id",
+                    "utr_number"],
+}
+"""Every column the compiler reads. Queries run live, so nothing can be defaulted at
+load time: a source missing any of these is reported and refused."""
 
 
 class ConnectionRequest(BaseModel):
@@ -63,9 +76,27 @@ def _target(req: ConnectionRequest) -> ms.MySQLTarget:
         raise HTTPException(400, str(e)) from None
 
 
+def _schema_report(tables) -> dict[str, Any]:
+    """Which canonical tables and columns the source has, and what is missing."""
+    by_name = {t.name: {c.name for c in t.columns} for t in tables}
+    report, problems = [], []
+    for table, cols in LIVE_COLUMNS.items():
+        have = by_name.get(table)
+        if have is None:
+            report.append({"canonical": table, "present": False, "missing": cols})
+            problems.append(f"table `{table}` is missing")
+            continue
+        missing = [c for c in cols if c not in have]
+        report.append({"canonical": table, "present": True, "missing": missing,
+                       "rows": next((t.rows for t in tables if t.name == table), 0)})
+        if missing:
+            problems.append(f"`{table}` lacks {', '.join(missing)}")
+    return {"tables": report, "ready": not problems, "problems": problems}
+
+
 @router.post("/validate")
 async def validate(req: ConnectionRequest) -> dict[str, Any]:
-    """Open the connection, list the tables and preview one.
+    """Open the connection, list the tables, check the schema and preview one table.
 
     `status` is "data_available" when the endpoint is live and has at least one
     table with rows -- that is the badge the page shows.
@@ -82,8 +113,9 @@ async def validate(req: ConnectionRequest) -> dict[str, Any]:
         if not tables:
             return {"status": "empty", "connected": True, "target": target.public(),
                     "tables": [], "error": "the connection works but the database has no tables"}
-        mapping = build_mapping(tables)
-        chosen = req.preview_table or _default_preview(tables, mapping)
+        schema = _schema_report(tables)
+        chosen = req.preview_table or ("transaction" if "transaction" in
+                                       {t.name for t in tables} else tables[0].name)
         table = next((t for t in tables if t.name == chosen), tables[0])
         sample = ms.preview(conn, target.database, table)
     except ms.SourceError as e:
@@ -92,7 +124,9 @@ async def validate(req: ConnectionRequest) -> dict[str, Any]:
         conn.close()
 
     token = secrets.token_urlsafe(24)
-    app_state.pending_sources[token] = (target, mapping)
+    app_state.pending_sources[token] = MySQLTarget(
+        host=target.host, port=target.port, database=target.database,
+        user=target.user, password=target.password)
     total_rows = sum(t.rows for t in tables)
     return {
         "status": "data_available" if total_rows else "empty",
@@ -103,81 +137,47 @@ async def validate(req: ConnectionRequest) -> dict[str, Any]:
         "total_rows": total_rows,
         "tables": [t.public() for t in tables],
         "preview": sample,
-        "mapping": mapping.public(),
-        "can_initialize": mapping.ready and total_rows > 0,
+        "mapping": schema,
+        "can_initialize": schema["ready"] and total_rows > 0,
     }
-
-
-def _default_preview(tables, mapping) -> str:
-    """Show the transaction table when one was recognised; it is what the
-    assistant will actually answer from."""
-    txn = mapping.tables["transaction"].source_table
-    if txn:
-        return txn
-    return max(tables, key=lambda t: t.rows).name
 
 
 @router.post("/initialize")
 async def initialize(req: InitializeRequest) -> dict[str, Any]:
-    """Ingest the validated source and hand the chatbot over to it.
-
-    This replaces the dataset currently loaded in ClickHouse. It runs in the
-    background; poll /status.
-    """
-    entry = app_state.pending_sources.get(req.token)
-    if not entry:
+    """Make the validated endpoint the live source. Synchronous: it reads the dataset
+    facts from the new server and switches only when that succeeds."""
+    target = app_state.pending_sources.get(req.token)
+    if not target:
         raise HTTPException(404, "that connection has expired; validate the endpoint again")
-    target, mapping = entry
-    if not mapping.ready:
-        raise HTTPException(400, "; ".join(mapping.problems()))
-    if app_state.ingest.busy:
-        raise HTTPException(409, "an initialisation is already running")
-
-    ingestor = Ingestor(target, mapping)
-
-    def _done(progress) -> None:
-        """Point the assistant at the freshly ingested database.
-
-        Called by the runner while the state is still `loaded` -- the gap between the
-        last insert and `ready`. Promotion to `ready` happens only if this returns
-        cleanly, so a client that polls until `ready` can never see the old dataset.
-        The switch is rolled back if the new tables cannot be read: a half-loaded
-        source must never become the thing the chatbot answers from.
-        """
-        if progress.state != "loaded":
-            return
-        previous = active_db()
-        try:
-            set_active_db(ingestor.db)
-            rebuild_dataset_context()
-            app_state.source = target
-            save_active_source(target, ingestor.db)
-            app_state.pending_sources.pop(req.token, None)
-            log.info("data source switched to %s in %s (%s)",
-                     target.label, ingestor.db, progress.dataset_version)
-        except Exception as e:  # noqa: BLE001
-            set_active_db(previous)
-            with contextlib.suppress(Exception):
-                rebuild_dataset_context()
-            progress.state = "failed"
-            progress.error = f"loaded, but the assistant could not read it back: {e}"
-
     try:
-        app_state.ingest.start(ingestor, _done)
-    except IngestError as e:
-        raise HTTPException(409, str(e)) from None
-    return {"started": True, "status": ingestor.progress.public()}
+        connect_source(target)
+    except Exception as e:  # noqa: BLE001 -- the page needs the reason
+        raise HTTPException(502, f"could not read the source: {e}") from None
+    app_state.pending_sources.pop(req.token, None)
+    return {"started": True, "status": _progress_done()}
+
+
+def _progress_done() -> dict[str, Any]:
+    """Shape the page already understands: a completed, instantaneous load."""
+    ctx = app_state.ctx
+    return {"state": "ready", "step": "connected", "rows_loaded": {}, "rows_expected": {},
+            "percent": 100.0, "busy": False, "error": None,
+            "dataset_version": ctx.dataset_version if ctx else None,
+            "started_at": None, "finished_at": None, "warnings": []}
 
 
 @router.get("/status")
 async def status() -> dict[str, Any]:
-    """Progress of the current or last initialisation, plus the active source."""
     ctx = app_state.ctx
     return {
-        "progress": app_state.ingest.progress.public(),
+        "progress": _progress_done() if ctx else {
+            "state": "idle", "step": "", "rows_loaded": {}, "rows_expected": {},
+            "percent": 0.0, "busy": False, "error": None, "dataset_version": None,
+            "started_at": None, "finished_at": None, "warnings": []},
         "active_source": app_state.source.public() if app_state.source else None,
-        "active_database": active_db(),
-        "bundled": is_bundled(),
+        "active_database": app_state.source.database if app_state.source else None,
+        "bundled": False,
+        "live": True,
         "dataset": {
             "dataset_version": ctx.dataset_version,
             "min_date": ctx.calendar.min_date.isoformat(),
@@ -192,17 +192,11 @@ async def status() -> dict[str, Any]:
 
 @router.post("/reset")
 async def reset() -> dict[str, Any]:
-    """Hand the chatbot back to the bundled dataset.
-
-    The ingested database is left in place, so the same endpoint can be made active
-    again by initialising it once more.
-    """
-    if app_state.ingest.busy:
-        raise HTTPException(409, "an initialisation is running; wait for it to finish")
+    """Back to the endpoint configured in the environment."""
     clear_active_source()
     try:
-        rebuild_dataset_context()
+        connect_source(env_target())
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(500, f"could not read the bundled dataset back: {e}") from None
-    log.info("data source reset to the bundled dataset (%s)", active_db())
-    return {"reset": True, "active_database": active_db()}
+        raise HTTPException(502, f"could not connect to the configured source: {e}") from None
+    log.info("data source reset to %s", env_target().label)
+    return {"reset": True, "active_database": env_target().database}

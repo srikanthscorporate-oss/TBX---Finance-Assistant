@@ -23,7 +23,7 @@ from .context import DatasetContext, RunContext
 
 RECORD_COLUMNS = ["transaction_date", "transaction_type", "amount_formatted", "counterparty",
                   "channel", "account", "bank", "reference", "utr", "description", "transaction_id"]
-"""What a detail answer shows. `account` is masked; `utr` is decrypted here and only here."""
+"""What a detail answer shows. `account` is masked; `utr` is surfaced here and only here."""
 
 ACCOUNT_COLUMNS = ["account", "bank", "program_id", "available_balance_formatted", "account_id"]
 
@@ -134,24 +134,34 @@ class EvidenceBuilder:
                 key="top_label", value=self._label(cq.label_column, rows[0].get(cq.label_column)),
                 kind="text",
                 formatted=self._label(cq.label_column, rows[0].get(cq.label_column))))
+            top_n = int(rows[0].get("record_count") or 0)
+            facts.append(ComputedFact(
+                key="top_count", value=top_n, kind="count", formatted=comp.format_count(top_n)))
             facts.append(ComputedFact(
                 key="group_count", value=len(rows), kind="count",
                 formatted=comp.format_count(len(rows))))
         elif rows and plan.intent is Intent.ACCOUNT_LIST:
+            n_all = int(rows[0].get("total_matches") or len(rows))
             facts.append(ComputedFact(
-                key="count", value=len(rows), kind="count",
-                formatted=comp.format_count(len(rows))))
+                key="count", value=n_all, kind="count",
+                formatted=comp.format_count(n_all)))
             facts.append(ComputedFact(
                 key="bank_count", value=len({r.get("bank_code") for r in rows}), kind="count",
                 formatted=comp.format_count(len({r.get("bank_code") for r in rows}))))
         elif rows and plan.intent is Intent.BALANCE:
-            total = sum(float(r.get("available_balance") or 0) for r in rows)
+            # Window totals from the query cover every matching account; the row sum
+            # is only the fallback for a result that lacks them.
+            n_all = int(rows[0].get("total_matches") or len(rows))
+            if rows[0].get("balance_total") is not None:
+                total = float(rows[0]["balance_total"])
+            else:
+                total = sum(float(r.get("available_balance") or 0) for r in rows)
             facts.append(ComputedFact(
                 key="balance_total", value=total, kind="money", currency=currency,
-                formatted=comp.format_money(total, currency), record_count=len(rows)))
+                formatted=comp.format_money(total, currency), record_count=n_all))
             facts.append(ComputedFact(
-                key="count", value=len(rows), kind="count",
-                formatted=comp.format_count(len(rows))))
+                key="count", value=n_all, kind="count",
+                formatted=comp.format_count(n_all)))
         elif rows:
             facts.append(ComputedFact(
                 key="count", value=count, kind="count",
@@ -230,14 +240,9 @@ class EvidenceBuilder:
                 })
                 continue
             a = self._acct.get(str(r.get("account_id")))
-            utr = ""
-            if r.get("utr_enc") and self.cipher is not None:
-                try:
-                    utr = self.cipher.decrypt(str(r["utr_enc"]))
-                except ValueError:
-                    utr = "(undecryptable)"
-            elif r.get("utr_enc"):
-                utr = "(encrypted)"
+            # The live source holds the UTR in plaintext; it is shown only here, on a
+            # detail answer the user asked for.
+            utr = str(r.get("utr") or "")
             ts = str(r.get("transaction_date", ""))
             out.append({
                 "transaction_date": ts[:19],
