@@ -1,0 +1,11 @@
+.git
+.venv
+apps/api/.venv
+apps/web/node_modules
+apps/web/.next
+data/raw
+data/processed
+evaluation/results
+__pycache__
+*.pyc
+.DS_Store
