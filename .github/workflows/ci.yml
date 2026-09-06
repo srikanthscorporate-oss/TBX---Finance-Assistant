@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8-alpine
+        ports: ['8123:8123']
+        env:
+          CLICKHOUSE_USER: tbx_admin
+          CLICKHOUSE_PASSWORD: change-me-admin
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -r apps/api/requirements.txt ruff mypy
+      - name: Lint
+        run: ruff check apps/api scripts
+      - name: Generate fixture dataset
+        run: python scripts/generate_synthetic_dataset.py --out data/raw
+      - name: Wait for ClickHouse
+        run: for i in $(seq 1 30); do curl -sf http://localhost:8123/ping && break; sleep 2; done
+      - name: Load dataset
+        run: python scripts/load_dataset.py --url http://localhost:8123
+      - name: Compiler cross-check
+        env: { CH_PORT: '8123' }
+        run: python apps/api/tests/crosscheck.py
+      - name: Security suite
+        run: python apps/api/tests/security.py
+      - name: Error path
+        run: python apps/api/tests/error_path.py
+      - name: End-to-end pipeline
+        env: { CH_PORT: '8123' }
+        run: python apps/api/tests/e2e_offline.py
+      - name: Golden evaluation
+        env:
+          CH_PORT: '8123'
+          CH_AGENT_USER: tbx_admin
+          CH_AGENT_PASSWORD: change-me-admin
+          TBX_USE_STUB_LLM: '1'
+          RATE_LIMIT_PER_MINUTE: '100000'
+        run: |
+          uvicorn app.main:app --app-dir apps/api --host 127.0.0.1 --port 8010 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8010/health && break; sleep 2; done
+          python scripts/run_evaluation.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evaluation-report
+          path: evaluation/results/latest.json
+
+  web:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: apps/web } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', cache: npm, cache-dependency-path: apps/web/package-lock.json }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose build api web
